@@ -1,0 +1,447 @@
+package com.neonvpn.app.config
+
+import org.json.JSONArray
+import org.json.JSONObject
+
+/**
+ * Builds a full, valid Xray-core JSON config from a [ServerConfig].
+ *
+ * Supports ONLY vless / vmess (project policy). Key points that make it work &
+ * not crash, and that give a stable, fast tunnel:
+ *
+ *   - SOCKS5 inbound (tag "socks-in") that tun2socks feeds the TUN traffic into,
+ *     with sniffing so routing/DNS sees real domains.
+ *   - Real `stats` + `policy` + `api` blocks so queryStats(...) returns true
+ *     up/down byte counters (the live speed meter). Without these the core
+ *     throws on stats query and the service dies.
+ *   - DNS with a fake-DNS-free, UseIP strategy + a local DNS outbound so the
+ *     core resolves names itself (prevents leaks & speeds up first byte).
+ *   - Anti-censorship hardening: TCP fragment on the dialer (tlshello) so DPI
+ *     can't fingerprint the ClientHello, mux for ws/grpc, uTLS chrome
+ *     fingerprint, TCP no-delay + keep-alive for a smooth, persistent tunnel.
+ */
+object XrayConfigBuilder {
+
+    const val SOCKS_PORT = 10808
+    const val API_PORT = 10809
+
+    const val PROXY_TAG = "proxy"
+
+    fun build(cfg: ServerConfig): String {
+        val root = JSONObject()
+
+        // ---- log ----
+        root.put("log", JSONObject().apply { put("loglevel", "warning") })
+
+        // ---- stats ----
+        root.put("stats", JSONObject())
+
+        // ---- api (StatsService for runtime counters) ----
+        root.put("api", JSONObject().apply {
+            put("tag", "api")
+            put("services", JSONArray().apply { put("StatsService") })
+        })
+
+        // ---- policy: per-outbound up/down stats + sane buffers ----
+        root.put("policy", JSONObject().apply {
+            put("levels", JSONObject().apply {
+                put("8", JSONObject().apply {
+                    // faster handshake give-up so dead links fail quickly, longer
+                    // idle so a healthy tunnel isn't torn down on a quiet moment.
+                    put("handshake", 4)
+                    put("connIdle", 300)
+                    put("uplinkOnly", 1)
+                    put("downlinkOnly", 1)
+                    put("statsUserUplink", true)
+                    put("statsUserDownlink", true)
+                    // Larger per-connection buffer => higher throughput on big
+                    // transfers ("تمام پهنای باند"). 1 MiB is a strong, safe
+                    // sweet-spot for full-speed downloads without spiking RAM on
+                    // weak phones.
+                    put("bufferSize", 1024)
+                })
+            })
+            put("system", JSONObject().apply {
+                put("statsInboundUplink", true)
+                put("statsInboundDownlink", true)
+                put("statsOutboundUplink", true)
+                put("statsOutboundDownlink", true)
+            })
+        })
+
+        // ---- dns (Bypass-for-Iran aware) ----
+        // Iranian domains resolve via a fast domestic resolver and go DIRECT, so
+        // local sites stay snappy and don't waste the tunnel; everything else is
+        // resolved through encrypted DoH (DoH defeats Iran's DNS poisoning) and
+        // routed through the proxy. This split is the backbone of the bypass.
+        root.put("dns", JSONObject().apply {
+            put("servers", JSONArray().apply {
+                // encrypted resolvers for the free internet (anti-poisoning)
+                put("https://1.1.1.1/dns-query")
+                put("https://dns.google/dns-query")
+                put("1.1.1.1")
+                put("8.8.8.8")
+                // domestic resolver ONLY for Iranian domains => kept direct & fast
+                put(JSONObject().apply {
+                    put("address", "78.157.42.100")           // Shecan / domestic
+                    put("port", 53)
+                    put("domains", JSONArray().apply {
+                        put("geosite:category-ir")
+                        put("geosite:cn")                      // harmless extra
+                        put("domain:ir")
+                    })
+                    put("skipFallback", true)
+                })
+            })
+            put("queryStrategy", "UseIP")
+            put("disableCache", false)
+            put("disableFallbackIfMatch", true)
+            put("tag", "dns-out-tag")
+        })
+
+        // ---- inbounds ----
+        val inbounds = JSONArray()
+        inbounds.put(JSONObject().apply {
+            put("tag", "socks-in")
+            put("port", SOCKS_PORT)
+            put("listen", "127.0.0.1")
+            put("protocol", "socks")
+            put("settings", JSONObject().apply {
+                put("auth", "noauth")
+                put("udp", true)
+                put("userLevel", 8)
+            })
+            put("sniffing", JSONObject().apply {
+                put("enabled", true)
+                put("destOverride", JSONArray().apply { put("http"); put("tls"); put("quic") })
+                put("routeOnly", false)
+            })
+        })
+        inbounds.put(JSONObject().apply {
+            put("tag", "api-in")
+            put("port", API_PORT)
+            put("listen", "127.0.0.1")
+            put("protocol", "dokodemo-door")
+            put("settings", JSONObject().apply { put("address", "127.0.0.1") })
+        })
+        root.put("inbounds", inbounds)
+
+        // ---- outbounds ----
+        val outbounds = JSONArray()
+        outbounds.put(buildProxyOutbound(cfg))
+        // direct freedom for Iranian/local traffic (no fragmentation needed —
+        // these stay inside the country and must be fast).
+        outbounds.put(JSONObject().apply {
+            put("tag", "direct")
+            put("protocol", "freedom")
+            put("settings", JSONObject().apply { put("domainStrategy", "UseIP") })
+        })
+        // dns outbound so the core's own queries resolve
+        outbounds.put(JSONObject().apply {
+            put("tag", "dns-out")
+            put("protocol", "dns")
+        })
+        outbounds.put(JSONObject().apply {
+            put("tag", "block")
+            put("protocol", "blackhole")
+            put("settings", JSONObject().apply {
+                put("response", JSONObject().apply { put("type", "http") })
+            })
+        })
+        root.put("outbounds", outbounds)
+
+        // ---- routing (Bypass for Iran) ----
+        // Rule order matters (first match wins):
+        //   1. stats api  -> api outbound
+        //   2. DNS (53)   -> dns outbound
+        //   3. block ads/malware + bittorrent so they can't choke the tunnel
+        //   4. Iranian domains / Iran IPs / private LAN -> DIRECT (fast, no tunnel)
+        //   5. EVERYTHING ELSE -> proxy  (full bandwidth through the tunnel)
+        root.put("routing", JSONObject().apply {
+            put("domainStrategy", "IPIfNonMatch")
+            put("rules", JSONArray().apply {
+                // stats api inbound -> api outbound
+                put(JSONObject().apply {
+                    put("type", "field")
+                    put("inboundTag", JSONArray().apply { put("api-in") })
+                    put("outboundTag", "api")
+                })
+                // DNS queries -> dns outbound
+                put(JSONObject().apply {
+                    put("type", "field")
+                    put("port", 53)
+                    put("outboundTag", "dns-out")
+                })
+                // drop bittorrent so it can't saturate the tunnel
+                put(JSONObject().apply {
+                    put("type", "field")
+                    put("outboundTag", "block")
+                    put("protocol", JSONArray().apply { put("bittorrent") })
+                })
+                // Iranian domains -> DIRECT (don't waste tunnel on local sites)
+                put(JSONObject().apply {
+                    put("type", "field")
+                    put("outboundTag", "direct")
+                    put("domain", JSONArray().apply {
+                        put("geosite:category-ir")
+                        put("domain:ir")
+                    })
+                })
+                // Iranian IP ranges + private LAN -> DIRECT
+                put(JSONObject().apply {
+                    put("type", "field")
+                    put("outboundTag", "direct")
+                    put("ip", JSONArray().apply {
+                        put("geoip:ir")
+                        put("geoip:private")
+                    })
+                })
+                // everything else through the proxy (full bandwidth)
+                put(JSONObject().apply {
+                    put("type", "field")
+                    put("outboundTag", PROXY_TAG)
+                    put("port", "0-65535")
+                })
+            })
+        })
+
+        return root.toString()
+    }
+
+    /**
+     * Minimal config used ONLY for a delay/ping test of a single server, without
+     * bringing the VPN up. It has just the proxy outbound; the native
+     * measureOutboundDelay dials through it and times a generate_204 request.
+     */
+    fun buildPingConfig(cfg: ServerConfig): String {
+        val root = JSONObject()
+        root.put("log", JSONObject().apply { put("loglevel", "none") })
+        root.put("outbounds", JSONArray().apply { put(buildProxyOutbound(cfg)) })
+        return root.toString()
+    }
+
+    private fun buildProxyOutbound(cfg: ServerConfig): JSONObject {
+        // Dedicated builders per protocol — a tuned "engine" for VLESS and a
+        // tuned one for VMESS, each with the settings that give that protocol
+        // the best speed + stability on Iran's disrupted internet.
+        return when (cfg.protocol) {
+            "vless" -> buildVlessOutbound(cfg)
+            "vmess" -> buildVmessOutbound(cfg)
+            else -> buildVlessOutbound(cfg)   // parser only emits vless/vmess
+        }
+    }
+
+    /**
+     * VLESS engine. VLESS is stateless and lean (no built-in encryption — TLS /
+     * Reality does it), so it shines for raw throughput. Reality / XTLS-vision
+     * flows want mux OFF and the connection kept 1:1 for full single-stream
+     * line-rate, which is exactly what a power user asking for "تمام پهنای باند"
+     * needs. We always advertise encryption=none (correct for VLESS) and pass the
+     * xtls flow through when present.
+     */
+    private fun buildVlessOutbound(cfg: ServerConfig): JSONObject {
+        val out = JSONObject()
+        out.put("tag", PROXY_TAG)
+        out.put("protocol", "vless")
+
+        out.put("settings", JSONObject().apply {
+            put("vnext", JSONArray().apply {
+                put(JSONObject().apply {
+                    put("address", cfg.address)
+                    put("port", cfg.port)
+                    put("users", JSONArray().apply {
+                        put(JSONObject().apply {
+                            put("id", cfg.userId)
+                            put("encryption", "none")
+                            if (cfg.flow.isNotBlank()) put("flow", cfg.flow)
+                            put("level", 8)
+                        })
+                    })
+                })
+            })
+        })
+        out.put("streamSettings", buildStreamSettings(cfg))
+
+        // Mux OFF for VLESS: Reality/XTLS-vision are incompatible with mux, and
+        // even on plain TLS, dedicating one proxied TCP stream per app connection
+        // gives full single-stream bandwidth with no head-of-line blocking — the
+        // fastest possible path for big downloads. (-1 = disabled.)
+        out.put("mux", JSONObject().apply {
+            put("enabled", false)
+            put("concurrency", -1)
+        })
+        return out
+    }
+
+    /**
+     * VMESS engine. VMESS carries its own AEAD encryption; "auto" lets the core
+     * pick the fastest cipher the device supports (AES-GCM on ARMv8 with crypto
+     * extensions, ChaCha20-Poly1305 otherwise) — best speed across old & new
+     * phones. We also leave mux OFF here for the same full-bandwidth reason; the
+     * stream tuning (fragment / keep-alive / buffers) is shared via
+     * buildStreamSettings so VMESS gets the same anti-DPI hardening as VLESS.
+     */
+    private fun buildVmessOutbound(cfg: ServerConfig): JSONObject {
+        val out = JSONObject()
+        out.put("tag", PROXY_TAG)
+        out.put("protocol", "vmess")
+
+        out.put("settings", JSONObject().apply {
+            put("vnext", JSONArray().apply {
+                put(JSONObject().apply {
+                    put("address", cfg.address)
+                    put("port", cfg.port)
+                    put("users", JSONArray().apply {
+                        put(JSONObject().apply {
+                            put("id", cfg.userId)
+                            put("alterId", cfg.alterId)
+                            // "auto" => fastest AEAD cipher the CPU supports
+                            put("security", cfg.security.ifBlank { "auto" })
+                            put("level", 8)
+                        })
+                    })
+                })
+            })
+        })
+        out.put("streamSettings", buildStreamSettings(cfg))
+
+        out.put("mux", JSONObject().apply {
+            put("enabled", false)
+            put("concurrency", -1)
+        })
+        return out
+    }
+
+    private fun buildStreamSettings(cfg: ServerConfig): JSONObject {
+        val stream = JSONObject()
+        // normalise transport: treat xhttp/splithttp as tcp-ish so the build
+        // never produces an unknown network the core rejects.
+        var net = cfg.network.ifBlank { "tcp" }.lowercase()
+        if (net == "xhttp" || net == "splithttp") net = "tcp"
+        if (net !in setOf("tcp", "ws", "grpc", "h2", "http", "kcp")) net = "tcp"
+        stream.put("network", net)
+
+        val sec = when {
+            cfg.tls.equals("reality", true) -> "reality"
+            cfg.tls.equals("tls", true) -> "tls"
+            cfg.tls.equals("xtls", true) -> "tls"
+            else -> ""
+        }
+        if (sec.isNotBlank()) stream.put("security", sec)
+
+        if (sec == "tls") {
+            stream.put("tlsSettings", JSONObject().apply {
+                put("allowInsecure", true)   // public free nodes often use self-signed / fronted certs
+                val server = cfg.sni.ifBlank { cfg.host.ifBlank { cfg.address } }
+                if (server.isNotBlank()) put("serverName", server)
+                put("fingerprint", cfg.fingerprint.ifBlank { "chrome" })  // uTLS browser mimicry
+                if (cfg.alpn.isNotBlank()) {
+                    put("alpn", JSONArray().apply {
+                        cfg.alpn.split(",").forEach { if (it.isNotBlank()) put(it.trim()) }
+                    })
+                }
+            })
+        } else if (sec == "reality") {
+            stream.put("realitySettings", JSONObject().apply {
+                val server = cfg.sni.ifBlank { cfg.address }
+                if (server.isNotBlank()) put("serverName", server)
+                put("fingerprint", cfg.fingerprint.ifBlank { "chrome" })
+                if (cfg.publicKey.isNotBlank()) put("publicKey", cfg.publicKey)
+                if (cfg.shortId.isNotBlank()) put("shortId", cfg.shortId)
+                put("spiderX", cfg.spiderX.ifBlank { "/" })
+            })
+        }
+
+        when (net) {
+            "ws" -> stream.put("wsSettings", JSONObject().apply {
+                put("path", cfg.path.ifBlank { "/" })
+                val hdrHost = cfg.host.ifBlank { cfg.sni }
+                if (hdrHost.isNotBlank()) {
+                    put("headers", JSONObject().apply { put("Host", hdrHost) })
+                }
+            })
+            "grpc" -> stream.put("grpcSettings", JSONObject().apply {
+                put("serviceName", cfg.path)
+                put("multiMode", false)
+                put("idle_timeout", 60)
+                put("health_check_timeout", 20)
+            })
+            "h2", "http" -> stream.put("httpSettings", JSONObject().apply {
+                put("path", cfg.path.ifBlank { "/" })
+                if (cfg.host.isNotBlank()) {
+                    put("host", JSONArray().apply {
+                        cfg.host.split(",").forEach { if (it.isNotBlank()) put(it.trim()) }
+                    })
+                }
+            })
+            "kcp" -> stream.put("kcpSettings", JSONObject().apply {
+                put("header", JSONObject().apply { put("type", cfg.headerType.ifBlank { "none" }) })
+                if (cfg.seed.isNotBlank()) put("seed", cfg.seed)
+                put("mtu", 1350)
+                put("tti", 50)
+                put("uplinkCapacity", 12)
+                put("downlinkCapacity", 100)
+                put("congestion", false)
+            })
+            "tcp" -> {
+                if (cfg.headerType.equals("http", true)) {
+                    stream.put("tcpSettings", JSONObject().apply {
+                        put("header", JSONObject().apply {
+                            put("type", "http")
+                            put("request", JSONObject().apply {
+                                put("path", JSONArray().apply { put(cfg.path.ifBlank { "/" }) })
+                                if (cfg.host.isNotBlank()) {
+                                    put("headers", JSONObject().apply {
+                                        put("Host", JSONArray().apply {
+                                            cfg.host.split(",").forEach { if (it.isNotBlank()) put(it.trim()) }
+                                        })
+                                    })
+                                }
+                            })
+                        })
+                    })
+                }
+            }
+        }
+
+        // Socket options + TLS-record FRAGMENTATION — the single biggest anti-DPI
+        // win against Iran's filtering. Splitting the ClientHello across several
+        // tiny TCP segments means the DPI box never sees the SNI in one packet,
+        // so SNI/keyword-based blocking and RST-injection can't fingerprint and
+        // tear down the connection. Combined with TLS uTLS mimicry above, this is
+        // what keeps the tunnel ALIVE on disrupted Iranian internet instead of
+        // dropping every few seconds. Keep-alive keeps the socket persistent.
+        stream.put("sockopt", JSONObject().apply {
+            // More aggressive keep-alive than before: probe every 15s after just
+            // 30s idle so a half-dead connection on Iran's flaky internet is
+            // detected & re-established FAST instead of silently hanging.
+            put("tcpKeepAliveIdle", 30)
+            put("tcpKeepAliveInterval", 15)
+            put("tcpNoDelay", true)
+            put("tcpMptcp", false)
+            put("mark", 0)
+            // Fragment the TLS handshake records. "tlshello" mode targets exactly
+            // the ClientHello (where SNI lives); length/interval are randomised
+            // ranges so the pattern itself isn't fingerprintable.
+            if (sec == "tls" || sec == "reality") {
+                put("dialerProxy", "")
+                put("tcpFastOpen", true)
+                put("fragment", JSONObject().apply {
+                    put("packets", "tlshello")
+                    put("length", "100-200")
+                    put("interval", "10-20")
+                })
+            } else {
+                // for plaintext transports, fragment the very first few packets so
+                // protocol-pattern DPI still can't lock on immediately.
+                put("fragment", JSONObject().apply {
+                    put("packets", "1-3")
+                    put("length", "100-200")
+                    put("interval", "10-20")
+                })
+            }
+        })
+
+        return stream
+    }
+}

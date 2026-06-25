@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Theme-aware semantic attributes. Each concrete theme (dark/light)
+         supplies the actual color so a single layout works in both. -->
+    <attr name="appBgColor" format="color" />
+    <attr name="appPanelColor" format="color" />
+    <attr name="appCardColor" format="color" />
+    <attr name="appCardActiveColor" format="color" />
+    <attr name="appTextPrimary" format="color" />
+    <attr name="appTextSecondary" format="color" />
+    <attr name="appTextDim" format="color" />
+    <attr name="appAccentGreen" format="color" />
+    <attr name="appAccentRed" format="color" />
+    <attr name="appStroke" format="color" />
+    <attr name="appBgDrawable" format="reference" />
+</resources>

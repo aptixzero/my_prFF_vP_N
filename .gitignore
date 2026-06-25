@@ -1,0 +1,17 @@
+# Gradle / Android build output (the app module's build dir)
+/app/build/
+.gradle/
+local.properties
+
+# IDE
+.idea/
+*.iml
+.DS_Store
+
+# Keep the top-level /build folder (it holds the released APK) — do NOT ignore it.
+!/build/
+!/build/**
+
+# Logs
+build_log.txt
+*.log
