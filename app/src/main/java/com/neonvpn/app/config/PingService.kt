@@ -188,12 +188,19 @@ object PingService {
 
     // ---- internals -------------------------------------------------------
 
-    /** 2500 ms attempt, then a single tighter 1500 ms retry on miss. */
+    /**
+     * v4.3 — CRITICAL FIX. [Pinger.ping] is ALREADY hard-bounded internally
+     * (PER_CONFIG_BUDGET_MS). The old code wrapped it in an OUTER 2 500 ms
+     * timeout that fired before the inner work could finish, so EVERY config
+     * reported unreachable. We now call ping directly (no shorter outer
+     * timeout) and simply retry ONCE if the first attempt misses — flaky links
+     * very often succeed on the second try.
+     */
     private suspend fun probeWithRetry(cfg: ServerConfig): Long {
-        val first = withTimeoutOrNull(PRIMARY_TIMEOUT_MS) { Pinger.ping(cfg) }
-        if (first != null && first > 0L) return first
-        val retry = withTimeoutOrNull(RETRY_TIMEOUT_MS) { Pinger.ping(cfg) }
-        return if (retry != null && retry > 0L) retry else Pinger.UNREACHABLE
+        val first = runCatching { Pinger.ping(cfg) }.getOrDefault(Pinger.UNREACHABLE)
+        if (first > 0L) return first
+        val retry = runCatching { Pinger.ping(cfg) }.getOrDefault(Pinger.UNREACHABLE)
+        return if (retry > 0L) retry else Pinger.UNREACHABLE
     }
 
     /**

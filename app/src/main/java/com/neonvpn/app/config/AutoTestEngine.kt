@@ -83,11 +83,14 @@ object AutoTestEngine {
         val cores = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
         (cores + 2).coerceIn(4, 10)
     }
-    private const val PRIMARY_TIMEOUT_MS = 2_500L
-    private const val RETRY_TIMEOUT_MS = 1_500L
-
-    /** A node is "working" if its confirmed latency is at or below this. */
-    private const val WORKING_MAX_MS = 1_800L
+    /**
+     * v4.3 — a node is "working" if its confirmed latency is at or below this.
+     * Raised so Auto Test accepts EXACTLY what a manual ping accepts (anything
+     * Pinger reports reachable, up to its own MAX_VALID_MS). The whole point:
+     * Auto Test must behave IDENTICALLY to a manual ping — same engine, same
+     * threshold, same accept/reject decision.
+     */
+    private const val WORKING_MAX_MS = 6_000L
 
     data class Progress(
         val running: Boolean = false,
@@ -328,14 +331,16 @@ object AutoTestEngine {
         }
     }
 
+    /**
+     * v4.3 — IDENTICAL to the manual ping path. [Pinger.ping] is already
+     * hard-bounded internally, so we call it directly (NO shorter outer timeout
+     * — that nested timeout was the v4.2 bug that made every config fail) and
+     * retry once on a miss, exactly like PingService.probeWithRetry.
+     */
     private suspend fun probeWithRetry(cfg: ServerConfig): Long {
-        val first = runCatching {
-            withTimeoutOrNull(PRIMARY_TIMEOUT_MS) { Pinger.ping(cfg) }
-        }.getOrNull()
-        if (first != null && first > 0L) return first
-        val retry = runCatching {
-            withTimeoutOrNull(RETRY_TIMEOUT_MS) { Pinger.ping(cfg) }
-        }.getOrNull()
-        return if (retry != null && retry > 0L) retry else Pinger.UNREACHABLE
+        val first = runCatching { Pinger.ping(cfg) }.getOrDefault(Pinger.UNREACHABLE)
+        if (first > 0L) return first
+        val retry = runCatching { Pinger.ping(cfg) }.getOrDefault(Pinger.UNREACHABLE)
+        return if (retry > 0L) retry else Pinger.UNREACHABLE
     }
 }
