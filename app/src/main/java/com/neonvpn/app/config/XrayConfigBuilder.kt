@@ -27,6 +27,16 @@ object XrayConfigBuilder {
 
     const val PROXY_TAG = "proxy"
 
+    // v4.9 — dedicated dialer outbound tag. The anti-DPI TLS-record
+    // fragmentation is applied HERE (on a freedom outbound) and the proxy
+    // outbound chains to it via `dialerProxy`. This is the ONLY correct way to
+    // fragment a VLESS/VMESS (incl. Reality/XTLS) handshake in modern Xray-core.
+    // Putting `fragment` directly on the proxy outbound's sockopt (the v4.8 bug)
+    // silently produced a malformed handshake: the TUN came up so the UI said
+    // "connected", but no real bytes ever flowed — the exact "fake connected,
+    // no upload/download" symptom. See §4.9 fix.
+    const val DIALER_TAG = "dialer"
+
     fun build(cfg: ServerConfig): String {
         val root = JSONObject()
 
@@ -133,6 +143,14 @@ object XrayConfigBuilder {
         // ---- outbounds ----
         val outbounds = JSONArray()
         outbounds.put(buildProxyOutbound(cfg))
+        // v4.9 — DEDICATED FRAGMENT DIALER. The proxy outbound above chains its
+        // real network dial through this freedom outbound (via streamSettings.
+        // sockopt.dialerProxy = DIALER_TAG). The TLS-record fragmentation lives
+        // here, so the ClientHello is split into tiny segments the DPI can't
+        // fingerprint — WITHOUT corrupting the proxy handshake. This is what
+        // makes traffic REALLY flow (fixes the v4.8 "fake connected" bug) while
+        // keeping the anti-censorship win.
+        outbounds.put(buildFragmentDialer(cfg))
         // direct freedom for Iranian/local traffic (no fragmentation needed —
         // these stay inside the country and must be fast).
         outbounds.put(JSONObject().apply {
@@ -220,7 +238,13 @@ object XrayConfigBuilder {
     fun buildPingConfig(cfg: ServerConfig): String {
         val root = JSONObject()
         root.put("log", JSONObject().apply { put("loglevel", "none") })
-        root.put("outbounds", JSONArray().apply { put(buildProxyOutbound(cfg)) })
+        // v4.9 — the ping MUST dial exactly like the real connection (same proxy
+        // outbound + same fragment dialer chain) so a config that pings green
+        // genuinely connects. Include the dialer outbound the proxy chains to.
+        root.put("outbounds", JSONArray().apply {
+            put(buildProxyOutbound(cfg))
+            put(buildFragmentDialer(cfg))
+        })
         return root.toString()
     }
 
@@ -233,6 +257,61 @@ object XrayConfigBuilder {
             "vmess" -> buildVmessOutbound(cfg)
             else -> buildVlessOutbound(cfg)   // parser only emits vless/vmess
         }
+    }
+
+    /**
+     * v4.9 — the freedom outbound that actually performs the TLS-record
+     * fragmentation. The proxy outbound dials THROUGH this via `dialerProxy`,
+     * so the real TCP connection to the server is opened here and the very
+     * first handshake packet (the ClientHello, where the SNI lives) is split
+     * into tiny segments the DPI can't fingerprint. This is the correct,
+     * core-supported placement for `fragment`; applying it on the proxy
+     * outbound's own sockopt (v4.8) corrupted the handshake → "fake connected".
+     *
+     * Fragmentation is only useful for TLS/Reality transports (real ClientHello
+     * present); for plaintext transports we still add a light first-packet
+     * fragment so protocol-pattern DPI can't lock on. Either way, this dialer's
+     * own socket keep-alive / no-delay / fast-open are tuned for a smooth,
+     * persistent, full-bandwidth tunnel.
+     */
+    private fun buildFragmentDialer(cfg: ServerConfig): JSONObject {
+        val sec = when {
+            cfg.tls.equals("reality", true) -> "reality"
+            cfg.tls.equals("tls", true) -> "tls"
+            cfg.tls.equals("xtls", true) -> "tls"
+            else -> ""
+        }
+        val out = JSONObject()
+        out.put("tag", DIALER_TAG)
+        out.put("protocol", "freedom")
+        out.put("settings", JSONObject().apply {
+            put("domainStrategy", "UseIP")
+            put("fragment", JSONObject().apply {
+                if (sec == "tls" || sec == "reality") {
+                    // target EXACTLY the TLS ClientHello — costs ~nothing on
+                    // throughput (only the first handshake packet is split) while
+                    // hiding the SNI from DPI.
+                    put("packets", "tlshello")
+                    put("length", "40-100")
+                    put("interval", "5-10")
+                } else {
+                    // plaintext: fragment only the first couple of packets.
+                    put("packets", "1-2")
+                    put("length", "40-100")
+                    put("interval", "5-10")
+                }
+            })
+        })
+        out.put("streamSettings", JSONObject().apply {
+            put("sockopt", JSONObject().apply {
+                put("tcpKeepAliveIdle", 30)
+                put("tcpKeepAliveInterval", 15)
+                put("tcpNoDelay", true)
+                put("tcpFastOpen", true)
+                put("mark", 0)
+            })
+        })
+        return out
     }
 
     /**
@@ -325,17 +404,23 @@ object XrayConfigBuilder {
         val hasFlow = cfg.flow.isNotBlank()
         val muxFriendly = net in setOf("ws", "grpc", "h2", "http")
         val enable = muxFriendly && !isReality && !hasFlow
-        out.put("mux", JSONObject().apply {
-            put("enabled", enable)
-            // 8 concurrent sub-streams per carrier connection is the v2rayNG
-            // sweet-spot: enough parallelism for snappy browsing without the
-            // overhead of too many open streams. (-1 = disabled when off.)
-            put("concurrency", if (enable) 8 else -1)
-            if (enable) {
+        // v4.9 — only EMIT the mux block when it is genuinely enabled. Some
+        // Xray-core builds reject a mux object with `concurrency: -1` (the old
+        // "disabled" sentinel), which failed the whole config parse and left the
+        // core unable to actually route traffic (part of the "fake connected"
+        // bug). When mux is off we simply omit the block entirely — the correct,
+        // universally-accepted way to disable multiplexing.
+        if (enable) {
+            out.put("mux", JSONObject().apply {
+                put("enabled", true)
+                // 8 concurrent sub-streams per carrier connection is the v2rayNG
+                // sweet-spot: enough parallelism for snappy browsing without the
+                // overhead of too many open streams.
+                put("concurrency", 8)
                 put("xudpConcurrency", 8)
                 put("xudpProxyUDP443", "reject")
-            }
-        })
+            })
+        }
     }
 
     private fun buildStreamSettings(cfg: ServerConfig): JSONObject {
@@ -430,18 +515,22 @@ object XrayConfigBuilder {
             }
         }
 
-        // Socket options + TLS-record FRAGMENTATION — the single biggest anti-DPI
-        // win against Iran's filtering. Splitting the ClientHello across several
-        // tiny TCP segments means the DPI box never sees the SNI in one packet,
-        // so SNI/keyword-based blocking and RST-injection can't fingerprint and
-        // tear down the connection. Combined with TLS uTLS mimicry above, this is
-        // what keeps the tunnel ALIVE on disrupted Iranian internet instead of
-        // dropping every few seconds. Keep-alive keeps the socket persistent.
+        // Socket options + anti-DPI FRAGMENT CHAINING. v4.9 — the actual
+        // TLS-record fragmentation is NO LONGER placed here (doing so on a
+        // VLESS/VMESS/Reality outbound corrupted the handshake → "fake
+        // connected, no traffic"). Instead we chain the proxy's real network
+        // dial through the dedicated freedom `dialer` outbound (DIALER_TAG),
+        // which performs the fragmentation correctly. The proxy outbound keeps
+        // only genuine socket tuning (keep-alive / no-delay / fast-open) for a
+        // smooth, persistent, full-bandwidth tunnel.
         stream.put("sockopt", JSONObject().apply {
-            // v4.5 — keep-alive tuned for "never drops, even idle for hours". We
-            // probe every 15s after 30s idle so a half-dead link is detected and
-            // re-established FAST, yet the long connIdle policy above keeps a quiet
-            // but healthy tunnel up (e.g. a paused download / screen off).
+            // Route this outbound's TCP dial through the fragment dialer. This is
+            // the core-supported, non-destructive way to fragment the handshake.
+            put("dialerProxy", DIALER_TAG)
+            // keep-alive tuned for "never drops, even idle for hours". We probe
+            // every 15s after 30s idle so a half-dead link is detected and
+            // re-established FAST, yet the long connIdle policy keeps a quiet but
+            // healthy tunnel up (paused download / screen off).
             put("tcpKeepAliveIdle", 30)
             put("tcpKeepAliveInterval", 15)
             put("tcpNoDelay", true)         // no Nagle delay → snappier first byte
@@ -450,27 +539,6 @@ object XrayConfigBuilder {
             // TCP Fast Open shaves a round-trip off every new connection — a real
             // latency win on Iran's high-RTT links (browsing feels much faster).
             put("tcpFastOpen", true)
-            // Fragment the TLS handshake records. "tlshello" mode targets EXACTLY
-            // the ClientHello (where SNI lives), so it costs essentially nothing on
-            // throughput (only the first handshake packet is split) while still
-            // hiding the SNI from DPI. Tighter, lower-overhead ranges than v4.4 so
-            // the anti-DPI win doesn't slow the handshake.
-            if (sec == "tls" || sec == "reality") {
-                put("dialerProxy", "")
-                put("fragment", JSONObject().apply {
-                    put("packets", "tlshello")
-                    put("length", "40-100")
-                    put("interval", "5-10")
-                })
-            } else {
-                // for plaintext transports, fragment only the very first packet so
-                // protocol-pattern DPI can't lock on, with minimal speed cost.
-                put("fragment", JSONObject().apply {
-                    put("packets", "1-2")
-                    put("length", "40-100")
-                    put("interval", "5-10")
-                })
-            }
         })
 
         return stream

@@ -43,7 +43,7 @@ before editing; prefer additive changes.
 | `service/NeonVpnService.kt` | The `VpnService`. Establishes the TUN interface, starts Xray, runs the **health check**, the **stats pump** (real up/down/ping), and the **watchdog**. |
 | `service/XrayManager.kt` | Owns the libv2ray (`libv2ray.aar`) core instance: start/stop, `measureDelay()` (real latency through the live outbound), `queryTrafficDelta()` (real byte counters). |
 | `service/TProxyService.kt` | `hev-socks5-tunnel` (tun2socks) JNI bridge: TUN ⇄ local SOCKS5. Native byte counters fallback. |
-| `config/XrayConfigBuilder.kt` | Builds the Xray JSON (inbounds: SOCKS5 10808 + API 10809; outbound: the selected server with Reality/XTLS/TLS + TLS-record fragmentation for anti-DPI). |
+| `config/XrayConfigBuilder.kt` | Builds the Xray JSON (inbounds: SOCKS5 10808 + API 10809; proxy outbound for the selected server with Reality/XTLS/TLS). **v4.9:** TLS-record fragmentation is on a DEDICATED `freedom` **dialer** outbound and the proxy chains to it via `sockopt.dialerProxy = "dialer"`. **NEVER put `fragment` back on the proxy outbound's own sockopt** — that corrupts the handshake and causes the "fake connected, no traffic" bug. Also: only emit the `mux` block when mux is actually enabled (never `concurrency: -1`). |
 | `config/ConfigParser.kt` | Parses `vless://` and `vmess://` (and only those) into `ServerConfig`. Handles emoji/symbols/mixed text. |
 | `config/Pinger.kt` | Real proxied ping through an actual Xray outbound to CENSORED endpoints only (NEVER Google). v4.7: ONE confirmed real round-trip == reachable; probes are truly cancellable. |
 | `config/LiveSources.kt` / `SourceFetcher.kt` | 50 live free-config feeds (25 vless + 25 vmess) + resilient mirror fetching. |
@@ -60,10 +60,17 @@ user taps eye
          few times. If it never returns a valid delay → STATE_ERROR + stop.
          (THIS is what makes "internet off ⇒ not connected" true.)
       5. start tun2socks (TProxyService) bridging TUN ⇄ SOCKS5 10808
-      6. broadcast STATE_CONNECTED + start stats pump + watchdog
+      6. >>> v4.9 REAL-TRAFFIC PROOF <<<  verifyRealTunnelTraffic(): issue a real
+         HTTP request THROUGH the local SOCKS5 inbound (the socket tun2socks
+         feeds) to a censored endpoint and require actual response bytes. If no
+         bytes flow → STATE_ERROR + stop. This proves the FULL device path works,
+         not just that the outbound can dial. (This is the authoritative fix for
+         the "shows connected but no upload/download" bug.)
+      7. broadcast STATE_CONNECTED + start stats pump + watchdog
 ```
 
-If you remove or weaken step 4, the "fake connected" bug comes back. **Don't.**
+If you remove or weaken step 4 OR step 6, the "fake connected" bug comes back.
+**Don't.**
 
 ---
 
