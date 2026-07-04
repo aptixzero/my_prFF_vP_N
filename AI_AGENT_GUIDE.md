@@ -43,7 +43,7 @@ before editing; prefer additive changes.
 | `service/NeonVpnService.kt` | The `VpnService`. Establishes the TUN interface, starts Xray, runs the **health check**, the **stats pump** (real up/down/ping), and the **watchdog**. |
 | `service/XrayManager.kt` | Owns the libv2ray (`libv2ray.aar`) core instance: start/stop, `measureDelay()` (real latency through the live outbound), `queryTrafficDelta()` (real byte counters). |
 | `service/TProxyService.kt` | `hev-socks5-tunnel` (tun2socks) JNI bridge: TUN ⇄ local SOCKS5. Native byte counters fallback. |
-| `config/XrayConfigBuilder.kt` | Builds the Xray JSON (inbounds: SOCKS5 10808 + API 10809; proxy outbound for the selected server with Reality/XTLS/TLS). **v4.9:** TLS-record fragmentation is on a DEDICATED `freedom` **dialer** outbound and the proxy chains to it via `sockopt.dialerProxy = "dialer"`. **NEVER put `fragment` back on the proxy outbound's own sockopt** — that corrupts the handshake and causes the "fake connected, no traffic" bug. Also: only emit the `mux` block when mux is actually enabled (never `concurrency: -1`). |
+| `config/XrayConfigBuilder.kt` | Builds the Xray JSON (inbounds: SOCKS5 10808 + API 10809; proxy outbound for the selected server with Reality/XTLS/TLS). **v5.0 (CRITICAL):** `sockopt.dialerProxy` is set **ONLY** for plain-TLS-without-flow configs (chaining to the `frag-dialer` freedom outbound that fragments the ClientHello). It is **NEVER** set for Reality, XTLS-Vision (flow), or plaintext — chaining those through a freedom dialer corrupts the handshake / breaks the Vision splice so the TUN comes up but **no bytes flow** ("fake connected"). v4.9 set dialerProxy on EVERY config, which was the bug. Keep `usesFragmentDialer()` as the single gate. Only emit the `mux` block when mux is actually enabled (never `concurrency: -1`). |
 | `config/ConfigParser.kt` | Parses `vless://` and `vmess://` (and only those) into `ServerConfig`. Handles emoji/symbols/mixed text. |
 | `config/Pinger.kt` | Real proxied ping through an actual Xray outbound to CENSORED endpoints only (NEVER Google). v4.7: ONE confirmed real round-trip == reachable; probes are truly cancellable. |
 | `config/LiveSources.kt` / `SourceFetcher.kt` | 50 live free-config feeds (25 vless + 25 vmess) + resilient mirror fetching. |
@@ -60,7 +60,7 @@ user taps eye
          few times. If it never returns a valid delay → STATE_ERROR + stop.
          (THIS is what makes "internet off ⇒ not connected" true.)
       5. start tun2socks (TProxyService) bridging TUN ⇄ SOCKS5 10808
-      6. >>> v4.9 REAL-TRAFFIC PROOF <<<  verifyRealTunnelTraffic(): issue a real
+      6. >>> v5.0 REAL-TRAFFIC PROOF <<<  verifyRealTunnelTraffic(): drive real
          HTTP request THROUGH the local SOCKS5 inbound (the socket tun2socks
          feeds) to a censored endpoint and require actual response bytes. If no
          bytes flow → STATE_ERROR + stop. This proves the FULL device path works,

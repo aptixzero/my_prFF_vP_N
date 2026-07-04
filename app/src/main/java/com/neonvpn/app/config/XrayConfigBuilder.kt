@@ -27,15 +27,13 @@ object XrayConfigBuilder {
 
     const val PROXY_TAG = "proxy"
 
-    // v4.9 — dedicated dialer outbound tag. The anti-DPI TLS-record
-    // fragmentation is applied HERE (on a freedom outbound) and the proxy
-    // outbound chains to it via `dialerProxy`. This is the ONLY correct way to
-    // fragment a VLESS/VMESS (incl. Reality/XTLS) handshake in modern Xray-core.
-    // Putting `fragment` directly on the proxy outbound's sockopt (the v4.8 bug)
-    // silently produced a malformed handshake: the TUN came up so the UI said
-    // "connected", but no real bytes ever flowed — the exact "fake connected,
-    // no upload/download" symptom. See §4.9 fix.
-    const val DIALER_TAG = "dialer"
+    // v5.0 — freedom outbound used ONLY as the proxy's dialer when it is SAFE to
+    // fragment (plain TLS, no XTLS flow). It is NEVER used for Reality / Vision /
+    // plaintext, because chaining the proxy through a freedom dialer breaks the
+    // XTLS-Vision splice and the Reality handshake — that was the v4.8/v4.9 "fake
+    // connected, no traffic" bug: the TUN came up (UI said Connected) but the
+    // corrupted handshake meant no real bytes ever flowed.
+    const val FRAGMENT_TAG = "frag-dialer"
 
     fun build(cfg: ServerConfig): String {
         val root = JSONObject()
@@ -60,19 +58,17 @@ object XrayConfigBuilder {
                     // Iran's disrupted links isn't dropped mid-TLS, while a long
                     // connIdle keeps a healthy tunnel alive through quiet moments
                     // (downloads that pause, screen-off, etc.) so it "never drops".
-                    put("handshake", 6)
-                    put("connIdle", 600)
+                    put("handshake", 8)
+                    put("connIdle", 300)
                     put("uplinkOnly", 0)
                     put("downlinkOnly", 0)
                     put("statsUserUplink", true)
                     put("statsUserDownlink", true)
-                    // v4.5 — BIGGER per-connection buffer for true full-bandwidth
-                    // ("تمام پهنای باند") downloads. 4 MiB lets a single fast stream
-                    // fill the user's whole pipe (high-BDP links) instead of being
-                    // throttled by a small window, while still safe on modern
-                    // phones. uplink/downlinkOnly = 0 means the buffer is freed
-                    // promptly when one direction goes idle, so RAM stays bounded.
-                    put("bufferSize", 4096)
+                    // v5.0 — 512 KiB buffer: the v2rayNG default that gives full
+                    // throughput on phones without wasting RAM. The old 4 MiB was
+                    // aggressive and could cause stalls / OOM on low-RAM devices,
+                    // which looked like a dead tunnel.
+                    put("bufferSize", 512)
                 })
             })
             put("system", JSONObject().apply {
@@ -88,11 +84,15 @@ object XrayConfigBuilder {
         // local sites stay snappy and don't waste the tunnel; everything else is
         // resolved through encrypted DoH (DoH defeats Iran's DNS poisoning) and
         // routed through the proxy. This split is the backbone of the bypass.
+        // v5.0 — SIMPLE, robust DNS. Plain UDP resolvers (routed through the
+        // proxy by the routing rules) for the free internet, and a domestic
+        // resolver for Iranian domains only. The old DoH ("https://…") servers
+        // could themselves be blocked / need to bootstrap and sometimes wedged
+        // resolution so nothing loaded even on a healthy tunnel — a direct cause
+        // of "connected but nothing opens". Plain IPs resolved over the proxy
+        // are the proven v2rayNG approach.
         root.put("dns", JSONObject().apply {
             put("servers", JSONArray().apply {
-                // encrypted resolvers for the free internet (anti-poisoning)
-                put("https://1.1.1.1/dns-query")
-                put("https://dns.google/dns-query")
                 put("1.1.1.1")
                 put("8.8.8.8")
                 // domestic resolver ONLY for Iranian domains => kept direct & fast
@@ -101,15 +101,14 @@ object XrayConfigBuilder {
                     put("port", 53)
                     put("domains", JSONArray().apply {
                         put("geosite:category-ir")
-                        put("geosite:cn")                      // harmless extra
                         put("domain:ir")
                     })
+                    put("expectIPs", JSONArray().apply { put("geoip:ir") })
                     put("skipFallback", true)
                 })
             })
             put("queryStrategy", "UseIP")
             put("disableCache", false)
-            put("disableFallbackIfMatch", true)
             put("tag", "dns-out-tag")
         })
 
@@ -123,11 +122,15 @@ object XrayConfigBuilder {
             put("settings", JSONObject().apply {
                 put("auth", "noauth")
                 put("udp", true)
+                put("address", "127.0.0.1")
                 put("userLevel", 8)
             })
+            // sniffing lets routing see the real destination domain (needed for
+            // domain-based Iran-direct rules and correct SNI). Do NOT sniff quic
+            // here — over-sniffing quic on some cores dropped UDP flows.
             put("sniffing", JSONObject().apply {
                 put("enabled", true)
-                put("destOverride", JSONArray().apply { put("http"); put("tls"); put("quic") })
+                put("destOverride", JSONArray().apply { put("http"); put("tls") })
                 put("routeOnly", false)
             })
         })
@@ -136,21 +139,24 @@ object XrayConfigBuilder {
             put("port", API_PORT)
             put("listen", "127.0.0.1")
             put("protocol", "dokodemo-door")
-            put("settings", JSONObject().apply { put("address", "127.0.0.1") })
+            put("settings", JSONObject().apply {
+                put("address", "127.0.0.1")
+                put("port", 0)
+                put("network", "tcp")
+            })
         })
         root.put("inbounds", inbounds)
 
         // ---- outbounds ----
         val outbounds = JSONArray()
+        // proxy MUST be first so measureOutboundDelay / stats target it.
         outbounds.put(buildProxyOutbound(cfg))
-        // v4.9 — DEDICATED FRAGMENT DIALER. The proxy outbound above chains its
-        // real network dial through this freedom outbound (via streamSettings.
-        // sockopt.dialerProxy = DIALER_TAG). The TLS-record fragmentation lives
-        // here, so the ClientHello is split into tiny segments the DPI can't
-        // fingerprint — WITHOUT corrupting the proxy handshake. This is what
-        // makes traffic REALLY flow (fixes the v4.8 "fake connected" bug) while
-        // keeping the anti-censorship win.
-        outbounds.put(buildFragmentDialer(cfg))
+        // v5.0 — only add the fragment dialer when the proxy actually chains to
+        // it (plain TLS, no flow). For Reality / Vision / plaintext it is NOT
+        // added and the proxy dials directly, so real traffic flows.
+        if (usesFragmentDialer(cfg)) {
+            outbounds.put(buildFragmentDialer())
+        }
         // direct freedom for Iranian/local traffic (no fragmentation needed —
         // these stay inside the country and must be fast).
         outbounds.put(JSONObject().apply {
@@ -218,11 +224,11 @@ object XrayConfigBuilder {
                         put("geoip:private")
                     })
                 })
-                // everything else through the proxy (full bandwidth)
+                // everything else through the proxy (full bandwidth, tcp + udp)
                 put(JSONObject().apply {
                     put("type", "field")
                     put("outboundTag", PROXY_TAG)
-                    put("port", "0-65535")
+                    put("network", "tcp,udp")
                 })
             })
         })
@@ -238,12 +244,12 @@ object XrayConfigBuilder {
     fun buildPingConfig(cfg: ServerConfig): String {
         val root = JSONObject()
         root.put("log", JSONObject().apply { put("loglevel", "none") })
-        // v4.9 — the ping MUST dial exactly like the real connection (same proxy
-        // outbound + same fragment dialer chain) so a config that pings green
-        // genuinely connects. Include the dialer outbound the proxy chains to.
+        // v5.0 — the ping dials EXACTLY like the live connection (same proxy
+        // outbound, and the same fragment dialer only when the proxy chains to
+        // one) so a config that pings green genuinely connects and carries data.
         root.put("outbounds", JSONArray().apply {
             put(buildProxyOutbound(cfg))
-            put(buildFragmentDialer(cfg))
+            if (usesFragmentDialer(cfg)) put(buildFragmentDialer())
         })
         return root.toString()
     }
@@ -260,55 +266,43 @@ object XrayConfigBuilder {
     }
 
     /**
-     * v4.9 — the freedom outbound that actually performs the TLS-record
-     * fragmentation. The proxy outbound dials THROUGH this via `dialerProxy`,
-     * so the real TCP connection to the server is opened here and the very
-     * first handshake packet (the ClientHello, where the SNI lives) is split
-     * into tiny segments the DPI can't fingerprint. This is the correct,
-     * core-supported placement for `fragment`; applying it on the proxy
-     * outbound's own sockopt (v4.8) corrupted the handshake → "fake connected".
-     *
-     * Fragmentation is only useful for TLS/Reality transports (real ClientHello
-     * present); for plaintext transports we still add a light first-packet
-     * fragment so protocol-pattern DPI can't lock on. Either way, this dialer's
-     * own socket keep-alive / no-delay / fast-open are tuned for a smooth,
-     * persistent, full-bandwidth tunnel.
+     * v5.0 — fragmentation is ONLY safe for plain TLS WITHOUT an XTLS flow.
+     *   • Reality  → fragmenting/chaining breaks the Reality handshake.
+     *   • XTLS flow (vision) → needs the raw socket, cannot be chained.
+     *   • plaintext → no ClientHello to hide; chaining just adds fragility.
+     * In all those cases the proxy dials DIRECTLY (no dialerProxy) so traffic
+     * really flows. Only tls-without-flow opts into the fragment dialer.
      */
-    private fun buildFragmentDialer(cfg: ServerConfig): JSONObject {
-        val sec = when {
-            cfg.tls.equals("reality", true) -> "reality"
-            cfg.tls.equals("tls", true) -> "tls"
-            cfg.tls.equals("xtls", true) -> "tls"
-            else -> ""
-        }
+    private fun usesFragmentDialer(cfg: ServerConfig): Boolean {
+        val isPlainTls = cfg.tls.equals("tls", true)
+        val hasFlow = cfg.flow.isNotBlank()
+        return isPlainTls && !hasFlow
+    }
+
+    /**
+     * v5.0 — freedom outbound whose `settings.fragment` splits the TLS
+     * ClientHello. This is the proven v2rayNG placement: the proxy outbound sets
+     * `sockopt.dialerProxy = FRAGMENT_TAG` and the actual TCP dial + fragmentation
+     * happens here. Used ONLY for plain-TLS-no-flow configs (see usesFragmentDialer)
+     * so it can never corrupt a Reality / Vision handshake.
+     */
+    private fun buildFragmentDialer(): JSONObject {
         val out = JSONObject()
-        out.put("tag", DIALER_TAG)
+        out.put("tag", FRAGMENT_TAG)
         out.put("protocol", "freedom")
         out.put("settings", JSONObject().apply {
-            put("domainStrategy", "UseIP")
+            put("domainStrategy", "AsIs")
             put("fragment", JSONObject().apply {
-                if (sec == "tls" || sec == "reality") {
-                    // target EXACTLY the TLS ClientHello — costs ~nothing on
-                    // throughput (only the first handshake packet is split) while
-                    // hiding the SNI from DPI.
-                    put("packets", "tlshello")
-                    put("length", "40-100")
-                    put("interval", "5-10")
-                } else {
-                    // plaintext: fragment only the first couple of packets.
-                    put("packets", "1-2")
-                    put("length", "40-100")
-                    put("interval", "5-10")
-                }
+                put("packets", "tlshello")
+                put("length", "100-200")
+                put("interval", "10-20")
             })
         })
         out.put("streamSettings", JSONObject().apply {
             put("sockopt", JSONObject().apply {
-                put("tcpKeepAliveIdle", 30)
-                put("tcpKeepAliveInterval", 15)
                 put("tcpNoDelay", true)
-                put("tcpFastOpen", true)
-                put("mark", 0)
+                put("tcpKeepAliveIdle", 100)
+                put("mark", 255)
             })
         })
         return out
@@ -515,30 +509,21 @@ object XrayConfigBuilder {
             }
         }
 
-        // Socket options + anti-DPI FRAGMENT CHAINING. v4.9 — the actual
-        // TLS-record fragmentation is NO LONGER placed here (doing so on a
-        // VLESS/VMESS/Reality outbound corrupted the handshake → "fake
-        // connected, no traffic"). Instead we chain the proxy's real network
-        // dial through the dedicated freedom `dialer` outbound (DIALER_TAG),
-        // which performs the fragmentation correctly. The proxy outbound keeps
-        // only genuine socket tuning (keep-alive / no-delay / fast-open) for a
-        // smooth, persistent, full-bandwidth tunnel.
+        // v5.0 — sockopt. Genuine socket tuning only. `dialerProxy` is set ONLY
+        // for plain-TLS-no-flow (chaining to the fragment dialer); it is NEVER
+        // set for Reality / Vision / plaintext, so those flows keep the raw
+        // socket they require and real bytes actually flow (fixes the v4.8/v4.9
+        // "fake connected, no traffic" bug).
         stream.put("sockopt", JSONObject().apply {
-            // Route this outbound's TCP dial through the fragment dialer. This is
-            // the core-supported, non-destructive way to fragment the handshake.
-            put("dialerProxy", DIALER_TAG)
-            // keep-alive tuned for "never drops, even idle for hours". We probe
-            // every 15s after 30s idle so a half-dead link is detected and
-            // re-established FAST, yet the long connIdle policy keeps a quiet but
-            // healthy tunnel up (paused download / screen off).
-            put("tcpKeepAliveIdle", 30)
-            put("tcpKeepAliveInterval", 15)
+            if (usesFragmentDialer(cfg)) {
+                // route this outbound's TCP dial through the fragment dialer,
+                // which splits the ClientHello — safe because there's no XTLS
+                // flow / Reality splice to break.
+                put("dialerProxy", FRAGMENT_TAG)
+            }
+            put("tcpKeepAliveIdle", 100)
             put("tcpNoDelay", true)         // no Nagle delay → snappier first byte
-            put("tcpMptcp", false)
-            put("mark", 0)
-            // TCP Fast Open shaves a round-trip off every new connection — a real
-            // latency win on Iran's high-RTT links (browsing feels much faster).
-            put("tcpFastOpen", true)
+            put("mark", 255)
         })
 
         return stream
