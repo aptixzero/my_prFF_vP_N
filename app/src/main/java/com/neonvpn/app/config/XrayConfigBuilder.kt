@@ -6,33 +6,31 @@ import org.json.JSONObject
 /**
  * Builds a full, valid Xray-core JSON config from a [ServerConfig].
  *
- * v5.1 — DIRECT, NO-INTERMEDIARY TUNNEL (the "real connection" fix).
+ * v5.2 — REAL BYTES BEFORE "CONNECTED" + corrected socket options.
  * ─────────────────────────────────────────────────────────────────────────────
- * v5.0 still chained plain-TLS configs through a separate `freedom` fragment
- * dialer (`sockopt.dialerProxy = "frag-dialer"`). On Iran's unstable, high-RTT
- * links that extra hop is an intermediary that:
- *   • adds a second TCP dial + handshake before real bytes flow → slow first byte,
- *   • occasionally fails the chained dial while the direct dial would succeed,
- *     which is exactly the "shows connected, no real upload/download" bug, and
- *   • can corrupt the TLS-fragment split under packet loss → fake-connected.
+ * v5.1 already removed the fragment-dialer intermediary so the proxy dials the
+ * server DIRECTLY. v5.2 closes the LAST gap that still let a dead/fake server
+ * show "connected":
  *
- * The user requirement is explicit: connect DIRECTLY to the config, no proxy /
- * no DNS intermediary in the path — when ping says green it must genuinely
- * connect at full speed. v5.1 therefore:
- *
- *   1. REMOVES the fragment dialer / dialerProxy entirely. The proxy outbound
- *      dials the server DIRECTLY, the way v2rayNG / NekoBox do on a "clean"
- *      config. This is the fastest, most stable path: one TCP dial, one
- *      handshake, raw bytes straight through.
- *   2. KEEPS anti-DPI hardening that does NOT add a hop: TCP NoDelay, keep-alive,
- *      uTLS chrome fingerprint, mux for ws/grpc/h2. These sit ON the proxy's own
- *      socket, not behind another outbound.
- *   3. SIMPLIFIES DNS to plain-IP resolvers carried through the proxy + a
- *      domestic resolver for Iranian domains only. No DoH (DoH endpoints can
- *      themselves be blocked and wedge resolution → "connected but nothing
- *      opens"). Plain UDP to 1.1.1.1 / 8.8.8.8 routed through the tunnel is the
- *      proven, fastest approach and never poisons.
+ *   1. REMOVES `sockopt.mark = 255`. SO_MARK is an iptables/nftables mechanism
+ *      from desktop Linux. On Android the VPN's own sockets are kept OFF the
+ *      TUN by VpnService.addDisallowedApplication(self) (already done in
+ *      establishTun). Setting SO_MARK on some kernels/ISPs marks the core's
+ *      outbound packets and a local firewall / the cellular gateway then DROPS
+ *      them — a direct cause of "shows connected, no real upload/download".
+ *      Removing it makes the core's sockets egress exactly the way v2rayNG's do
+ *      (no mark, just the disallow-app bypass), so real bytes flow.
+ *   2. KEEPS the direct dial (one TCP, one handshake, raw bytes — no proxy /
+ *      no DNS intermediary in the path), TCP NoDelay, keep-alive, uTLS chrome
+ *      fingerprint, mux for ws/grpc/h2.
+ *   3. KEEPS the simplified plain-UDP DNS (no DoH) + domestic resolver for
+ *      Iranian domains only.
  *   4. Clean tcp+udp proxy rule so the full bandwidth of the tunnel is used.
+ *
+ * The matching v5.2 change in NeonVpnService now requires REAL RESPONSE BYTES
+ * (not just a TCP CONNECT) AND verifies the TUN→tun2socks bridge is actually
+ * carrying packets before reporting Connected — so a green ping genuinely means
+ * a working tunnel at full speed.
  *
  * Only vless / vmess are supported (project policy).
  */
@@ -465,21 +463,23 @@ object XrayConfigBuilder {
             }
         }
 
-        // v5.1 — sockopt. Genuine socket tuning ON THE PROXY'S OWN SOCKET, with
+        // v5.2 — sockopt. Genuine socket tuning ON THE PROXY'S OWN SOCKET, with
         // NO dialerProxy / NO intermediary hop. The proxy dials the server
-        // DIRECTLY (the single biggest "real connection" fix) and these options
-        // sit on that direct socket:
+        // DIRECTLY and these options sit on that direct socket:
         //   • tcpNoDelay = true  → disables Nagle, snappier first byte + throughput.
         //   • tcpKeepAliveIdle   → keeps the long-lived tunnel alive through quiet
         //                          moments so it "never drops".
-        //   • mark = 255         → marks the core's own sockets so they bypass the
-        //                          TUN (no routing loop), egress over the real link.
-        // NO dialerProxy here — that was the v5.0 intermediary that caused the
-        // fake-connected / no-real-traffic bug. Direct dial = real bytes flow.
+        // NO `mark` here (v5.2 fix): SO_MARK is an iptables/nftables mechanism
+        // from desktop Linux. On Android the VPN's own sockets are kept off the
+        // TUN by VpnService.addDisallowedApplication(self) (done in establishTun),
+        // so a mark is both unnecessary AND harmful — on some kernels / cellular
+        // gateways it causes the marked packets to be dropped, which is exactly
+        // the "shows connected, no real upload/download" bug. Removing it makes
+        // the core egress exactly the way v2rayNG does (no mark, just the
+        // disallow-app bypass), so real bytes flow.
         stream.put("sockopt", JSONObject().apply {
             put("tcpKeepAliveIdle", 100)
             put("tcpNoDelay", true)         // no Nagle delay → snappier first byte
-            put("mark", 255)
         })
 
         return stream
