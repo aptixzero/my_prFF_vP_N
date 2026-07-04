@@ -57,9 +57,17 @@ object AppPrefs {
     fun isDark(ctx: Context): Boolean = getTheme(ctx) != THEME_LIGHT
 
     // -------------------------------------------------------- paste history
-    /** Whether the opt-in "remember pasted configs" history is enabled (default OFF). */
+    /**
+     * Whether the "remember pasted configs" history is enabled.
+     * v4.8 — DEFAULT ON. The user wants "Paste From Clipboard" to also scan the
+     * accumulated history of previously-pasted configs (e.g. they copied 100
+     * configs over time) and add every vless/vmess found. Android does not expose
+     * the OS clipboard HISTORY to apps for privacy reasons, so the app keeps its
+     * own local, on-device history of everything ever pasted in-app and merges it
+     * into each paste. This is now enabled by default so the behaviour "just works".
+     */
     fun isPasteHistoryEnabled(ctx: Context): Boolean =
-        prefs(ctx).getBoolean(KEY_PASTE_HISTORY, false)
+        prefs(ctx).getBoolean(KEY_PASTE_HISTORY, true)
 
     fun setPasteHistoryEnabled(ctx: Context, enabled: Boolean) {
         prefs(ctx).edit().putBoolean(KEY_PASTE_HISTORY, enabled).apply()

@@ -123,8 +123,13 @@ class ConfigsFragment : Fragment() {
         }
         if (clipText.isBlank()) { toast(getString(R.string.clipboard_empty)); return }
 
-        // Opt-in history: record this paste (only vless/vmess substrings) and pull
-        // previously-stored links in as a fallback merge source.
+        // v4.8 — SCAN THE FULL CLIPBOARD HISTORY. Android does not let an app read
+        // the OS-level clipboard history for privacy reasons, so the app maintains
+        // its own on-device history of every vless/vmess link it has ever pasted.
+        // On each paste we (1) record the new clip's links, then (2) merge the
+        // ENTIRE accumulated history with the current clip and parse them all — so
+        // if the user copied 100 configs over time, every vless/vmess among them is
+        // detected and added. Enabled by default (see AppPrefs.isPasteHistoryEnabled).
         val history = PasteHistoryStore(requireContext())
         val mergedText = if (AppPrefs.isPasteHistoryEnabled(requireContext())) {
             history.append(clipText)

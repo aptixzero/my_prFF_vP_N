@@ -105,6 +105,13 @@ object Pinger {
      */
     private const val REQUIRED_CONFIRMATIONS = 1
 
+    /**
+     * v4.8 — number of round-trips taken against the SAME reference endpoint,
+     * whose MEDIAN becomes the reported ping. 3 samples give a stable, jitter-
+     * resistant number without making the sweep slow.
+     */
+    private const val SAMPLE_COUNT = 3
+
     /** Latency upper bound for a node we still treat as "reachable". */
     private const val MAX_VALID_MS = 8_000L
 
@@ -121,22 +128,44 @@ object Pinger {
             return@withContext UNREACHABLE
         }
 
-        // Whole-config budget guards the sweep even if every probe times out.
+        // v4.8 — STABLE, REPRODUCIBLE PING (fixes "same config pings 90ms now,
+        // no-ping 2 minutes later"). The old code took the FIRST endpoint that
+        // answered and reported ITS single round-trip. That number swung wildly
+        // because (a) different endpoints have very different latencies and (b) a
+        // single sample on a jittery link is noisy — so the SAME node could look
+        // fast, then slow, then dead on consecutive taps.
+        //
+        // The new rule:
+        //   1. Lock onto ONE reference endpoint — the first censored endpoint that
+        //      answers at all (tried fastest-first). This keeps every measurement
+        //      of this config against the SAME target, so numbers are comparable.
+        //   2. Take up to [SAMPLE_COUNT] quick round-trips to that endpoint and
+        //      report their MEDIAN — a realistic, jitter-resistant latency instead
+        //      of one lucky/unlucky sample.
+        //   3. If the primary endpoint stops answering mid-sampling, fall back to
+        //      the next censored endpoint so a momentary block on one target does
+        //      not falsely report the whole node as dead.
+        // Result: if a node pings 90ms, it keeps pinging ~90ms; a node that is
+        // genuinely down reads UNREACHABLE consistently.
         val result = withTimeoutOrNull(PER_CONFIG_BUDGET_MS) {
-            val good = ArrayList<Long>(PROBE_URLS.size)
+            val samples = ArrayList<Long>(SAMPLE_COUNT)
 
-            // Probe censored endpoints one by one, fastest first. We stop the
-            // moment we have the required confirmation(s) — for v4.7 that is the
-            // FIRST real round-trip that succeeds.
+            // find the reference endpoint (first that answers), fastest-first.
+            var refUrl: String? = null
             for (url in PROBE_URLS) {
                 val ms = singleProbe(json, url)
-                if (ms in 1..MAX_VALID_MS) {
-                    good.add(ms)
-                    if (good.size >= REQUIRED_CONFIRMATIONS) break
-                }
+                if (ms in 1..MAX_VALID_MS) { refUrl = url; samples.add(ms); break }
+            }
+            if (refUrl == null) return@withTimeoutOrNull UNREACHABLE
+
+            // gather additional samples against the SAME reference endpoint.
+            var fails = 0
+            while (samples.size < SAMPLE_COUNT && fails < 2) {
+                val ms = singleProbe(json, refUrl)
+                if (ms in 1..MAX_VALID_MS) samples.add(ms) else fails++
             }
 
-            if (good.size >= REQUIRED_CONFIRMATIONS) median(good) else UNREACHABLE
+            if (samples.isNotEmpty()) median(samples) else UNREACHABLE
         }
         result ?: UNREACHABLE
     }

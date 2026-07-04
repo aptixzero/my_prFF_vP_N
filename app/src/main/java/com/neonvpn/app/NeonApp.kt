@@ -34,6 +34,32 @@ class NeonApp : Application() {
         try { UserStatsReporter.start(this) } catch (_: Throwable) {}
     }
 
+    /**
+     * v4.8 — OVERNIGHT STABILITY. When the OS signals memory pressure (which is
+     * exactly what happens during a long screen-off Auto-Test session on a phone
+     * that's also caching other apps), we proactively shed the biggest shedable
+     * loads BEFORE the kernel OOM-kills us. This keeps the process alive and the
+     * tunnel up through the night instead of crashing when the cache fills.
+     */
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        try {
+            if (level >= TRIM_MEMORY_RUNNING_LOW) {
+                // Drop cached ping states we don't strictly need in RAM and hint a GC.
+                runCatching { com.neonvpn.app.config.PingService.prune(emptySet()) }
+                runCatching { System.gc() }
+            }
+        } catch (_: Throwable) {}
+    }
+
+    override fun onLowMemory() {
+        super.onLowMemory()
+        try {
+            runCatching { com.neonvpn.app.config.PingService.prune(emptySet()) }
+            runCatching { System.gc() }
+        } catch (_: Throwable) {}
+    }
+
     companion object {
         lateinit var instance: NeonApp
             private set

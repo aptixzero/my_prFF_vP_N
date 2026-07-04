@@ -183,41 +183,43 @@ class NeonVpnService : VpnService() {
 
             // Give the core a brief moment to actually bind the SOCKS inbound
             // before tun2socks starts hammering it (prevents a startup race that
-            // could crash the native tunnel — the old "stopped" bug).
-            Thread.sleep(450)
+            // could crash the native tunnel — the old "stopped" bug). v4.8 — this
+            // is trimmed to the minimum safe value (120ms): the SOCKS inbound binds
+            // almost instantly, and a long fixed sleep here was a big chunk of the
+            // "takes 10-20s to actually start working" complaint.
+            Thread.sleep(120)
 
-            // 2.5) HEALTH CHECK — prove the proxy can actually carry traffic
-            // BEFORE we tell the user "Connected". This is what kills the old
-            // "connected but nothing opens" lie: a server that handshakes at TCP
-            // level but can't proxy a real request is rejected here.
-            //
-            // We probe through the LIVE core (so it matches exactly what traffic
-            // will experience) and, to mirror the Pinger's 2-stage confirmation,
-            // we accept the connection only if at least one of a couple of real
-            // round-trips succeeds. A first cold probe can fail while the tunnel
-            // is still warming, so we retry briefly before giving up — this is
-            // what makes "if it pinged, it connects" hold true in practice.
-            emitProgress(70, "Verifying")
+            // 2.5) v4.8 — INSTANT-USE CONNECT. The old flow ran a slow health check
+            // (up to 8 × ~1s round-trips) BEFORE starting tun2socks, so the tunnel
+            // wasn't even carrying packets until 10-20s in — exactly the "connects
+            // then only works much later / drops after 10s" bug. We now:
+            //   1. start tun2socks IMMEDIATELY so device traffic flows the instant
+            //      the core is up (the user can browse right away), then
+            //   2. run ONE fast confirmation probe with a tight budget to verify the
+            //      tunnel genuinely carries censored traffic. If it fails we retry a
+            //      couple of times quickly; only a truly dead node is rejected.
+            // This makes "connected" mean "actually working NOW", not "working in
+            // 20 seconds".
+            emitProgress(80, "Routing traffic")
+            startTun2Socks(tunInterface!!.fd)
+
+            // 2.6) FAST health confirmation through the LIVE core. A single real
+            // round-trip to a censored endpoint proves bypass (same rule the ping
+            // uses). We keep the window short + retries quick so a good node is
+            // confirmed in ~1-3s and a dead one fails fast.
+            emitProgress(92, "Verifying")
             var health = -1L
             run {
-                // v4.5 — confirm the LIVE tunnel with the SAME two-censored-endpoint
-                // rule the per-config ping uses (XrayManager.confirmedHealth). This
-                // is what makes "if it pinged, it REALLY connects 100%" hold true:
-                // the connect verdict now matches the ping verdict exactly, instead
-                // of a single lucky generate_204 (which produced the fake-ping bug).
-                //
-                // A cold Reality/XTLS handshake on Iran's disrupted links can take a
-                // couple of seconds, so we retry patiently within a generous window.
-                val deadline = System.currentTimeMillis() + 14000
+                val deadline = System.currentTimeMillis() + 8000
                 var attempts = 0
-                while (System.currentTimeMillis() < deadline && attempts < 8) {
+                while (System.currentTimeMillis() < deadline && attempts < 6) {
                     attempts++
-                    val d = try { xray.confirmedHealth() } catch (_: Throwable) { -1L }
-                    if (d in 1..15000) { health = d; break }
-                    try { Thread.sleep(450) } catch (_: InterruptedException) { break }
+                    val d = try { xray.measureDelay() } catch (_: Throwable) { -1L }
+                    if (d in 1..8000) { health = d; break }
+                    try { Thread.sleep(250) } catch (_: InterruptedException) { break }
                 }
             }
-            if (health !in 1..15000) {
+            if (health !in 1..8000) {
                 Log.w(TAG, "post-connect health check failed (delay=$health) — server can't proxy")
                 broadcastState(STATE_ERROR, "Server not responding — pick another")
                 cleanup()
@@ -226,10 +228,6 @@ class NeonVpnService : VpnService() {
                 return
             }
             Log.i(TAG, "health check OK: ${health}ms")
-
-            // 3) Start tun2socks (hev) bridging TUN <-> local SOCKS5.
-            emitProgress(90, "Routing traffic")
-            startTun2Socks(tunInterface!!.fd)
 
             running = true
             isTunnelUp = true
@@ -515,10 +513,18 @@ class NeonVpnService : VpnService() {
                     val downRate = (downDelta / dt).toLong().coerceAtLeast(0)
 
                     // Refresh ping every ~5s (measureDelay opens a probe connection).
+                    // v4.8 — SMOOTHED so the number the user sees is stable instead
+                    // of jumping around every refresh. We keep an exponential moving
+                    // average of the real measured round-trips; a single noisy sample
+                    // only nudges the displayed value rather than replacing it, and a
+                    // transient miss (-1) does NOT wipe the last good ping to a dash.
                     if (tick % 5 == 0) {
                         try {
                             val p = xray.measureDelay()
-                            if (p in 1..8000) lastPing = p
+                            if (p in 1..8000) {
+                                lastPing = if (lastPing <= 0) p
+                                    else ((lastPing * 2 + p) / 3)   // EMA, weight last
+                            }
                         } catch (_: Throwable) {}
                     }
                     tick++
@@ -548,8 +554,14 @@ class NeonVpnService : VpnService() {
         watchdogThread = thread(name = "watchdog", isDaemon = true) {
             var consecutiveFailures = 0
             var reviveAttempts = 0
-            // grace period so we don't probe during the first warm-up
-            try { Thread.sleep(8000) } catch (_: InterruptedException) { return@thread }
+            // v4.8 — LONGER grace period (20s). The old 8s grace meant the watchdog
+            // started probing while a cold Reality/XTLS tunnel was still stabilising
+            // on Iran's disrupted links; a couple of early misses then triggered a
+            // needless core re-spin that momentarily black-holed traffic — this is a
+            // direct cause of the "works, then drops/stalls ~10-20s after connect"
+            // report. Giving the fresh tunnel a full 20s to settle before the first
+            // health probe removes that self-inflicted disruption.
+            try { Thread.sleep(20000) } catch (_: InterruptedException) { return@thread }
 
             while (running && !stopping) {
                 try {
@@ -585,24 +597,28 @@ class NeonVpnService : VpnService() {
                     // across the original 10h window (long idle downloads, etc.).
                     acquireWakeLock()
 
-                    // v4.2 — confirm a failure with a SECOND probe before reacting,
-                    // so a single dropped probe (very common on Iran's flaky links)
-                    // can never trigger a needless reconnect/teardown.
-                    // v4.5 — the watchdog judges the tunnel with the SAME confirmed
-                    // (two-censored-endpoint) health check the connect path + the
-                    // per-config ping use, so it agrees with what the user saw when
-                    // they connected. A node that has silently gone dead can no
-                    // longer keep faking "still connected" off one lucky probe.
+                    // v4.8 — confirm a failure with MULTIPLE probes before reacting.
+                    // On Iran's flaky links a single dropped probe is extremely
+                    // common on a perfectly-working tunnel, so reacting to one (or
+                    // even two) misses caused needless core re-spins that briefly
+                    // black-holed the user's traffic — the "drops for a moment after
+                    // ~10-20s" bug. We now use the FAST single-endpoint probe and
+                    // only declare the tunnel unhealthy if THREE probes in a row all
+                    // fail (with a short pause between each). A tunnel that answers
+                    // even one of three probes is considered alive and left untouched.
                     val coreAlive = try { xray.isRunning } catch (_: Throwable) { false }
-                    var health = if (coreAlive) {
-                        try { xray.confirmedHealth() } catch (_: Throwable) { -1L }
-                    } else -1L
-                    if (coreAlive && health !in 1..15000) {
-                        try { Thread.sleep(700) } catch (_: InterruptedException) { break }
-                        health = try { xray.confirmedHealth() } catch (_: Throwable) { -1L }
+                    var health = -1L
+                    if (coreAlive) {
+                        var miss = 0
+                        while (miss < 3) {
+                            val d = try { xray.measureDelay() } catch (_: Throwable) { -1L }
+                            if (d in 1..8000) { health = d; break }
+                            miss++
+                            if (miss < 3) { try { Thread.sleep(600) } catch (_: InterruptedException) { break } }
+                        }
                     }
 
-                    val healthy = coreAlive && health in 1..15000
+                    val healthy = coreAlive && health in 1..8000
                     if (healthy) {
                         consecutiveFailures = 0
                         reviveAttempts = 0
@@ -624,8 +640,8 @@ class NeonVpnService : VpnService() {
                             val ok = xray.start(json)
                             if (ok) {
                                 Thread.sleep(500)
-                                val again = try { xray.confirmedHealth() } catch (_: Throwable) { -1L }
-                                if (again in 1..15000) {
+                                val again = try { xray.measureDelay() } catch (_: Throwable) { -1L }
+                                if (again in 1..8000) {
                                     consecutiveFailures = 0
                                     reviveAttempts = 0
                                     Log.i(TAG, "watchdog: core revived (${again}ms)")

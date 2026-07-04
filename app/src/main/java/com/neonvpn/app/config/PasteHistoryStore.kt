@@ -88,7 +88,10 @@ class PasteHistoryStore(context: Context) {
 
     companion object {
         private const val KEY = "paste_history_configs"
-        const val MAX_ENTRIES = 50
-        const val TTL_MS = 14L * 24 * 60 * 60 * 1000   // 14 days
+        // v4.8 — much larger so a user who has pasted many configs over time (the
+        // "I copied 100 configs" case) keeps them all available for re-import.
+        const val MAX_ENTRIES = 500
+        // v4.8 — longer retention (60 days) so older working configs aren't lost.
+        const val TTL_MS = 60L * 24 * 60 * 60 * 1000   // 60 days
     }
 }

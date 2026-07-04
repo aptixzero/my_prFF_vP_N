@@ -14,4 +14,6 @@ local.properties
 
 # Logs
 build_log.txt
+build_log2.txt
+build_log3.txt
 *.log

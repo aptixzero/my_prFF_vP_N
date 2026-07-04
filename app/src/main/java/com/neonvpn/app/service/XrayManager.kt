@@ -140,11 +140,20 @@ class XrayManager(private val context: Context) {
      *  edge is filtered on many strong-filter ISPs, so a healthy reading here
      *  genuinely means the tunnel is still bypassing censorship. */
     fun measureDelay(url: String = "https://cp.cloudflare.com/generate_204"): Long {
-        return try {
-            controller?.measureDelay(url) ?: -1
-        } catch (_: Throwable) {
-            -1
+        val c = controller ?: return -1
+        // v4.8 — try the primary endpoint, then fall back through the censored-edge
+        // set. A single fixed URL sometimes gets momentarily blocked/throttled on
+        // Iran's links even while the tunnel is perfectly healthy, which produced a
+        // fake "-1 / no ping" flicker in the live stats and false watchdog misses.
+        // Returning the FIRST endpoint that answers keeps the displayed ping stable.
+        val d0 = try { c.measureDelay(url) } catch (_: Throwable) { -1L }
+        if (d0 in 1..8000) return d0
+        for (u in HEALTH_PROBE_URLS) {
+            if (u == url) continue
+            val d = try { c.measureDelay(u) } catch (_: Throwable) { -1L }
+            if (d in 1..8000) return d
         }
+        return -1
     }
 
     /**
