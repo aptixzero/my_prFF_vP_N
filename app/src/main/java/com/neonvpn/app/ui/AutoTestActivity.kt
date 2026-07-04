@@ -78,11 +78,26 @@ class AutoTestActivity : BaseActivity() {
     private suspend fun saveResult(result: ConnectivityProbe.Result) = withContext(Dispatchers.IO) {
         val store = ConfigStore(applicationContext)
         val toAdd = ArrayList<ServerConfig>(2)
-        // Number them generically continuing from the free-source counter isn't
-        // needed here; just give neutral Server labels.
+        // Number them generically continuing from the current list size; give
+        // neutral Server labels. v5.1 — bake the name into the link's #remark so
+        // it stays "Server N" when copied into any other v2ray client.
         var n = store.getServers().size
-        result.vless?.let { n++; toAdd.add(it.copy(remark = "Server $n")) }
-        result.vmess?.let { n++; toAdd.add(it.copy(remark = "Server $n")) }
+        result.vless?.let {
+            n++
+            val name = "Server $n"
+            toAdd.add(it.copy(
+                remark = name,
+                rawLink = ConfigParser.rewriteRemark(it.rawLink, name)
+            ))
+        }
+        result.vmess?.let {
+            n++
+            val name = "Server $n"
+            toAdd.add(it.copy(
+                remark = name,
+                rawLink = ConfigParser.rewriteRemark(it.rawLink, name)
+            ))
+        }
         if (toAdd.isNotEmpty()) {
             store.addServers(toAdd)
             if (store.getSelectedId() == null) {

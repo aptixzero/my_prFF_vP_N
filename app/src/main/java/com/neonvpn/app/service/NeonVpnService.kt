@@ -369,7 +369,7 @@ class NeonVpnService : VpnService() {
 
             // --- minimal HTTP GET over the established tunnel for the strong proof ---
             val httpReq = "GET /generate_204 HTTP/1.1\r\nHost: $host\r\n" +
-                "User-Agent: ProfessorVPN/5.0\r\nConnection: close\r\nAccept: */*\r\n\r\n"
+                "User-Agent: ProfessorVPN/5.1\r\nConnection: close\r\nAccept: */*\r\n\r\n"
             out.write(httpReq.toByteArray(Charsets.US_ASCII)); out.flush()
 
             val buf = ByteArray(64)
