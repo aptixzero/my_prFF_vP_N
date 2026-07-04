@@ -121,9 +121,13 @@ object FreeConfigSource {
         }
 
         // Assign monotonic Server N names in final (interleaved) order.
+        // v5.1 — the name is ALSO baked into the link's #remark fragment so it
+        // stays "Server N" when the config is copied into any other v2ray client.
         val named = interleaved.map { cfg ->
             serverIndex++
-            cfg.copy(remark = "${ConfigFetcher.GENERIC_PREFIX} $serverIndex")
+            val name = "${ConfigFetcher.GENERIC_PREFIX} $serverIndex"
+            val relinked = ConfigParser.rewriteRemark(cfg.rawLink, name)
+            cfg.copy(remark = name, rawLink = relinked)
         }
 
         // Persist cursors + name counter + the seen memory.

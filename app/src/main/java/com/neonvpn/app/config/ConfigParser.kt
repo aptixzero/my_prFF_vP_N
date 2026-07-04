@@ -474,6 +474,91 @@ object ConfigParser {
         }
     }
 
+    // ============================================================ v5.1 NAMING
+    /**
+     * v5.1 — bake the neutral "Server N" name INTO the share link's `#remark`
+     * fragment, so the name travels WITH the config.
+     *
+     * The user's problem: a config copied out of this app showed as "Server 1"
+     * here, but when pasted into another v2ray client the remark changed (the
+     * other client either kept the original feed branding baked into the link,
+     * or showed its own auto-name). The fix is to REWRITE the link's `#remark`
+     * fragment to the neutral "Server N" label right when we name it, so:
+     *
+     *   • the name we display is exactly the name embedded in the link, and
+     *   • when the user copies the link out and pastes it anywhere else, the
+     *     OTHER client reads the SAME "Server N" remark from the link — so the
+     *     name stays consistent across apps (Server 1 stays Server 1 … up to
+     *     99999).
+     *
+     * Works for both supported formats:
+     *   • vless://…?…#remark  → replace the fragment with the encoded name.
+     *   • vmess://<base64-of-JSON>  → rewrite the JSON's "ps" (remark) field,
+     *     re-encode, and rebuild the link. (Form-B vmess with a query/fragment
+     *     is handled by the fragment path.)
+     *
+     * Returns the rewritten link. Never throws — on any failure the original
+     * link is returned unchanged (the name still displays correctly in-app via
+     * [ServerConfig.remark]).
+     */
+    fun rewriteRemark(rawLink: String, newRemark: String): String {
+        return try {
+            if (rawLink.isBlank()) return rawLink
+            if (rawLink.startsWith("vless://", true)) {
+                rewriteVlessRemark(rawLink, newRemark)
+            } else if (rawLink.startsWith("vmess://", true)) {
+                rewriteVmessRemark(rawLink, newRemark)
+            } else {
+                rawLink
+            }
+        } catch (_: Throwable) {
+            rawLink   // never lose a config over a rename
+        }
+    }
+
+    /** Replace the `#fragment` of a vless link with the URL-encoded [newRemark]. */
+    private fun rewriteVlessRemark(link: String, newRemark: String): String {
+        // strip existing fragment (and any trailing junk after it)
+        val hashIdx = link.indexOf('#')
+        val base = if (hashIdx >= 0) link.substring(0, hashIdx) else link
+        // URL-encode the remark so spaces / non-ASCII survive a copy/paste round-trip
+        val enc = try { Uri.encode(newRemark) } catch (_: Throwable) { newRemark }
+        return "$base#$enc"
+    }
+
+    /**
+     * vmess form A is `vmess://<base64 of JSON>` with the remark in the JSON's
+     * "ps" field. We decode, rewrite "ps", re-encode, and rebuild the link so
+     * the name is baked into the base64 blob itself. Form B (with a `#fragment`)
+     * is handled like vless.
+     */
+    private fun rewriteVmessRemark(link: String, newRemark: String): String {
+        var body = link.substring("vmess://".length).trim()
+        // If there's a fragment, rewrite it (form B / DukeMehdi style).
+        val hashIdx = body.indexOf('#')
+        if (hashIdx >= 0) {
+            val baseBody = body.substring(0, hashIdx)
+            val enc = try { Uri.encode(newRemark) } catch (_: Throwable) { newRemark }
+            return "vmess://$baseBody#$enc"
+        }
+        // Form A: base64-of-JSON. Decode, rewrite "ps", re-encode.
+        val qIdx = body.indexOf('?')
+        if (qIdx >= 0) body = body.substring(0, qIdx)   // drop query for decode
+        val decoded = tryDecodeBase64(body) ?: return link
+        if (!decoded.trim().startsWith("{")) return link
+        val o = JSONObject(decoded)
+        o.put("ps", newRemark)
+        val reencoded = try {
+            android.util.Base64.encodeToString(
+                o.toString().toByteArray(Charsets.UTF_8),
+                android.util.Base64.NO_WRAP
+            )
+        } catch (_: Throwable) {
+            return link
+        }
+        return "vmess://$reencoded"
+    }
+
     /** Try standard + url-safe base64, with or without padding. */
     private fun tryDecodeBase64(input: String): String? {
         val s = input.trim().replace("\n", "").replace("\r", "")

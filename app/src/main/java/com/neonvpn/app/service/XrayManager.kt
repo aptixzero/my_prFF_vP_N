@@ -156,31 +156,6 @@ class XrayManager(private val context: Context) {
         return -1
     }
 
-    /**
-     * v4.7 — LIVE-CORE health probe, aligned with the repaired [Pinger] rule:
-     * ONE real round-trip through the live core to a CENSORED endpoint (never
-     * Google) proves the tunnel genuinely carries blocked traffic.
-     *
-     * Why one (not two): the v4.5/v4.6 "two independent censored endpoints"
-     * requirement was the direct cause of the "nothing connects" bug — on
-     * Iran's high-RTT, disrupted links a SECOND full round-trip very often
-     * cannot complete inside the health window even on a perfectly working
-     * node, so the connect path rejected every server and the watchdog tore
-     * live sessions down. One confirmed round-trip to a filtered endpoint is
-     * already an honest proof of bypass — and it exactly matches what the
-     * per-config ping now reports, so "pings → connects" stays true.
-     *
-     * Returns the measured latency in ms, or -1 if no censored endpoint answers.
-     */
-    fun confirmedHealth(): Long {
-        val c = controller ?: return -1
-        for (url in HEALTH_PROBE_URLS) {
-            val d = try { c.measureDelay(url) } catch (_: Throwable) { -1L }
-            if (d in 1..8000) return d
-        }
-        return -1
-    }
-
     private fun extractAsset(name: String) {
         val outFile = File(context.filesDir, name)
         if (outFile.exists() && outFile.length() > 0) return

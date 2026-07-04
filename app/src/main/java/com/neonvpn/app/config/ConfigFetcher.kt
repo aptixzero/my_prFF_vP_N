@@ -118,8 +118,13 @@ object ConfigFetcher {
                 // source branding in the remark (e.g. "🔥 @somechannel | DE").
                 // We strip ALL of that and assign a neutral generic label so the
                 // source is never exposed in the app: Server 1, Server 2, …
+                // v5.1 — the name is ALSO baked into the link's #remark fragment
+                // (via [ConfigParser.rewriteRemark]) so it travels with the config
+                // and stays "Server N" when copied into ANY other v2ray client.
                 serverIndex++
-                collected[key] = cfg.copy(remark = "$GENERIC_PREFIX $serverIndex")
+                val name = "$GENERIC_PREFIX $serverIndex"
+                val relinked = ConfigParser.rewriteRemark(cfg.rawLink, name)
+                collected[key] = cfg.copy(remark = name, rawLink = relinked)
                 locationCounts[loc] = have + 1
                 onProgress(collected.size, target, "Found ${collected.size}/$target configs")
             }
@@ -132,9 +137,14 @@ object ConfigFetcher {
     const val GENERIC_PREFIX = "Server"
 
     /** Re-number a list so names are always sequential Server 1..N (used after a
-     *  batch is collected / after sorting so the visible labels stay clean). */
+     *  batch is collected / after sorting so the visible labels stay clean).
+     *  v5.1 — also rewrites the name into each link's #remark so it survives a
+     *  copy → paste into any other v2ray client. */
     fun renumber(list: List<ServerConfig>): List<ServerConfig> =
-        list.mapIndexed { i, c -> c.copy(remark = "$GENERIC_PREFIX ${i + 1}") }
+        list.mapIndexed { i, c ->
+            val name = "$GENERIC_PREFIX ${i + 1}"
+            c.copy(remark = name, rawLink = ConfigParser.rewriteRemark(c.rawLink, name))
+        }
 
     /**
      * BATCHED / STREAMING collect — built for a predictable, stable Auto Test.
@@ -198,7 +208,9 @@ object ConfigFetcher {
                 if (have >= MAX_PER_LOCATION) continue
 
                 serverIndex++
-                val named = cfg.copy(remark = "$GENERIC_PREFIX $serverIndex")
+                val name = "$GENERIC_PREFIX $serverIndex"
+                val relinked = ConfigParser.rewriteRemark(cfg.rawLink, name)
+                val named = cfg.copy(remark = name, rawLink = relinked)
                 collected[key] = named
                 locationCounts[loc] = have + 1
                 pending.add(named)

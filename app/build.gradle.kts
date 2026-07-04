@@ -11,8 +11,8 @@ android {
         applicationId = "com.neonvpn.app"
         minSdk = 24          // Android 7.0 — lowest the Xray core (libv2ray) supports
         targetSdk = 34
-        versionCode = 31
-        versionName = "5.0"
+        versionCode = 32
+        versionName = "5.1"
 
         // §4.8 — instrumented test runner. The anti-Random guard test lives in
         // app/src/androidTest and runs on device/emulator via this runner.
