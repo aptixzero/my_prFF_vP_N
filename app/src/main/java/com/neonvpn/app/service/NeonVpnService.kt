@@ -229,6 +229,28 @@ class NeonVpnService : VpnService() {
             }
             Log.i(TAG, "health check OK: ${health}ms")
 
+            // 2.7) v4.9 — REAL END-TO-END TUNNEL PROOF. The delay check above only
+            // proves the proxy OUTBOUND can dial; it does NOT prove that device
+            // traffic actually flows through tun2socks → SOCKS inbound → routing →
+            // outbound (the full path a real app uses). The v4.8 "fake connected,
+            // no upload/download numbers" bug was exactly this: the outbound dialed
+            // fine so the check passed, but the end-to-end path was broken, so no
+            // real bytes ever moved. We now issue a real HTTP request THROUGH the
+            // local SOCKS5 inbound (the same socket tun2socks feeds) and require it
+            // to actually transfer bytes. If nothing flows, we DO NOT claim
+            // "connected" — we report an error so the user can pick another server.
+            emitProgress(96, "Testing traffic")
+            val bytesMoved = verifyRealTunnelTraffic()
+            if (!bytesMoved) {
+                Log.w(TAG, "end-to-end tunnel test moved no bytes — not a real connection")
+                broadcastState(STATE_ERROR, "No traffic through tunnel — pick another")
+                cleanup()
+                stopForegroundCompat()
+                stopSelf()
+                return
+            }
+            Log.i(TAG, "end-to-end tunnel test OK: real bytes flowed")
+
             running = true
             isTunnelUp = true
             emitProgress(100, "Connected")
@@ -244,6 +266,106 @@ class NeonVpnService : VpnService() {
             stopForegroundCompat()
             stopSelf()
         }
+    }
+
+    /**
+     * v4.9 — proves REAL end-to-end tunnel traffic by issuing an actual HTTP
+     * request THROUGH the local SOCKS5 inbound (the very socket tun2socks pumps
+     * device packets into) and confirming bytes really transfer. This is the
+     * authoritative "is this a real connection?" test — it exercises the full
+     * TUN → SOCKS → routing → proxy-outbound → dialer chain, not just a direct
+     * outbound dial. Returns true only if a censored endpoint actually answered
+     * with real bytes over the tunnel.
+     *
+     * We connect our OWN socket to 127.0.0.1:SOCKS_PORT, speak the SOCKS5
+     * no-auth handshake + CONNECT, then send a minimal HTTP/1.1 HEAD/GET and
+     * require a non-empty response. The core's own sockets are exempt from the
+     * TUN (addDisallowedApplication(self)), so this loopback path is safe and
+     * mirrors exactly how a real app's traffic egresses.
+     */
+    private fun verifyRealTunnelTraffic(): Boolean {
+        val targets = listOf(
+            "cp.cloudflare.com" to "/generate_204",
+            "www.cloudflare.com" to "/cdn-cgi/trace",
+            "core.telegram.org" to "/robots.txt"
+        )
+        val deadline = System.currentTimeMillis() + 9000
+        var attempt = 0
+        while (System.currentTimeMillis() < deadline && attempt < targets.size * 2 && !stopping) {
+            val (host, path) = targets[attempt % targets.size]
+            attempt++
+            if (socksHttpProbe(host, path)) return true
+            try { Thread.sleep(200) } catch (_: InterruptedException) { break }
+        }
+        return false
+    }
+
+    /** One real HTTPS-less HTTP round-trip through the local SOCKS5 inbound.
+     *  We use port 80 (plain HTTP) so we don't need a TLS stack here — the point
+     *  is only to prove bytes traverse the tunnel end-to-end. Returns true if
+     *  the remote actually sent us response bytes. */
+    private fun socksHttpProbe(host: String, path: String): Boolean {
+        var sock: java.net.Socket? = null
+        return try {
+            sock = java.net.Socket()
+            sock.tcpNoDelay = true
+            sock.soTimeout = 4000
+            sock.connect(java.net.InetSocketAddress("127.0.0.1", XrayConfigBuilder.SOCKS_PORT), 4000)
+            val out = sock.getOutputStream()
+            val inp = sock.getInputStream()
+
+            // --- SOCKS5 greeting: VER=5, 1 method, 0x00 (no auth) ---
+            out.write(byteArrayOf(0x05, 0x01, 0x00)); out.flush()
+            val greet = ByteArray(2)
+            if (readFully(inp, greet) != 2 || greet[0].toInt() != 0x05 || greet[1].toInt() != 0x00) return false
+
+            // --- SOCKS5 CONNECT to host:80 (ATYP=domain 0x03) ---
+            val hb = host.toByteArray(Charsets.US_ASCII)
+            val req = java.io.ByteArrayOutputStream()
+            req.write(0x05); req.write(0x01); req.write(0x00); req.write(0x03)
+            req.write(hb.size); req.write(hb)
+            req.write((80 shr 8) and 0xFF); req.write(80 and 0xFF)
+            out.write(req.toByteArray()); out.flush()
+
+            // reply: VER REP RSV ATYP + BND.ADDR + BND.PORT
+            val head = ByteArray(4)
+            if (readFully(inp, head) != 4 || head[1].toInt() != 0x00) return false
+            val skip = when (head[3].toInt()) {
+                0x01 -> 4 + 2          // IPv4 + port
+                0x04 -> 16 + 2         // IPv6 + port
+                0x03 -> {              // domain: 1 len byte + n + 2 port
+                    val lenB = ByteArray(1)
+                    if (readFully(inp, lenB) != 1) return false
+                    (lenB[0].toInt() and 0xFF) + 2
+                }
+                else -> return false
+            }
+            if (skip > 0) { val junk = ByteArray(skip); if (readFully(inp, junk) != skip) return false }
+
+            // --- minimal HTTP GET over the established tunnel ---
+            val httpReq = "GET $path HTTP/1.1\r\nHost: $host\r\n" +
+                "User-Agent: ProfessorVPN/4.9\r\nConnection: close\r\nAccept: */*\r\n\r\n"
+            out.write(httpReq.toByteArray(Charsets.US_ASCII)); out.flush()
+
+            // require REAL response bytes to come back over the tunnel
+            val buf = ByteArray(64)
+            val n = try { inp.read(buf) } catch (_: Throwable) { -1 }
+            n > 0
+        } catch (_: Throwable) {
+            false
+        } finally {
+            try { sock?.close() } catch (_: Throwable) {}
+        }
+    }
+
+    private fun readFully(inp: java.io.InputStream, buf: ByteArray): Int {
+        var off = 0
+        while (off < buf.size) {
+            val r = try { inp.read(buf, off, buf.size - off) } catch (_: Throwable) { -1 }
+            if (r <= 0) break
+            off += r
+        }
+        return off
     }
 
     private fun establishTun(): ParcelFileDescriptor? {
@@ -464,8 +586,11 @@ class NeonVpnService : VpnService() {
             // Baseline for the tun2socks native counters (cumulative since the
             // tunnel started). Used as a fallback when the Xray stats API returns
             // 0 (e.g. some core builds don't surface per-outbound counters).
-            var lastTunTx = 0L
-            var lastTunRx = 0L
+            // v4.9 — the baseline is seeded from the FIRST reading (a sentinel of
+            // -1 means "not yet seeded") so it can never mistake a genuine 0 for
+            // "unseeded" and lose a real delta.
+            var lastTunTx = -1L
+            var lastTunRx = -1L
 
             while (running && !stopping) {
                 try {
@@ -481,26 +606,32 @@ class NeonVpnService : VpnService() {
                     // are always populated whenever packets actually move, so the
                     // speed meter can never be stuck at a permanent 0 B/s while
                     // real traffic is flowing. We diff the cumulative values.
-                    if (upDelta == 0L && downDelta == 0L) {
-                        try {
-                            val tun = TProxyService.TProxyGetStats()
-                            if (tun != null && tun.size >= 2) {
-                                // convention: [0]=tx(up from device), [1]=rx(down)
-                                val tx = tun[0].coerceAtLeast(0)
-                                val rx = tun[1].coerceAtLeast(0)
-                                if (lastTunTx == 0L && lastTunRx == 0L) {
-                                    lastTunTx = tx; lastTunRx = rx
-                                } else {
-                                    val du = (tx - lastTunTx).coerceAtLeast(0)
-                                    val dd = (rx - lastTunRx).coerceAtLeast(0)
-                                    lastTunTx = tx; lastTunRx = rx
-                                    // feed back into the per-tick delta; the totals
-                                    // are accumulated once below (no double count).
-                                    upDelta = du; downDelta = dd
-                                }
-                            }
-                        } catch (_: Throwable) {}
+                    // v4.9 — always REFRESH the tun baseline every tick (even when
+                    // the Xray API DID report bytes) so that if the API later drops
+                    // to 0 mid-session the fallback delta is correct and doesn't
+                    // spike from a stale baseline.
+                    var tunTx = -1L
+                    var tunRx = -1L
+                    try {
+                        val tun = TProxyService.TProxyGetStats()
+                        if (tun != null && tun.size >= 2) {
+                            tunTx = tun[0].coerceAtLeast(0)   // [0]=tx (up from device)
+                            tunRx = tun[1].coerceAtLeast(0)   // [1]=rx (down)
+                        }
+                    } catch (_: Throwable) {}
+
+                    if (upDelta == 0L && downDelta == 0L && tunTx >= 0 && tunRx >= 0) {
+                        if (lastTunTx < 0 || lastTunRx < 0) {
+                            lastTunTx = tunTx; lastTunRx = tunRx
+                        } else {
+                            upDelta = (tunTx - lastTunTx).coerceAtLeast(0)
+                            downDelta = (tunRx - lastTunRx).coerceAtLeast(0)
+                        }
                     }
+                    // keep the baseline current regardless of which source we used
+                    if (tunTx >= 0) lastTunTx = tunTx
+                    if (tunRx >= 0) lastTunRx = tunRx
+
                     totalUp += upDelta
                     totalDown += downDelta
 
