@@ -1,21 +1,24 @@
 {
-  "version": 13,
-  "ts": 1781704800000,
-  "lastUpdatedAt": 1781704800000,
-  "latestApkVersion": "4.6",
-  "inAppTelegramUrl": "https://t.me/Undercity_c",
-  "inAppTelegram": {
-    "url": "https://t.me/Undercity_c"
-  },
+  "version": 14,
+  "latestApkVersion": "4.8",
   "appLogo": {
     "url": ""
   },
+  "inAppTelegramUrl": "https://t.me/Undercity_c",
   "contact": {
     "text": "جهت ثبت تبلیغات و استعلام قیمت بنر به آیدی زیر در تلگرام پیام دهید:",
     "telegramId": "@mx_pr",
-    "telegramUrl": "https://t.me/mx_pr",
-    "btnCopy": "کپی آیدی",
-    "btnSend": "ارسال پیام"
+    "telegramUrl": "https://t.me/mx_pr"
+  },
+  "appBanner": {
+    "enabled": true,
+    "title": "",
+    "subtitle": "",
+    "bgColor": "#11161C",
+    "textColor": "#000000",
+    "imageUrl": "https://raw.githubusercontent.com/aptixzero/PRF_VPN/main/adminpanel/media/banner_1783146541004.png?v=1783146544198",
+    "action": "url",
+    "actionUrl": "https://t.me/Undercity_c"
   },
   "homeCta": {
     "enabled": true,
@@ -25,9 +28,9 @@
   },
   "homeBanner": {
     "enabled": true,
-    "imageUrl": "",
-    "text": "محل تبلیغ شما",
-    "textColor": "#E6F2EC",
+    "imageUrl": "https://raw.githubusercontent.com/aptixzero/PRF_VPN/main/adminpanel/media/banner_1783146541004.png?v=1783146544198",
+    "text": "",
+    "textColor": "#000000",
     "url": "https://t.me/Undercity_c"
   },
   "donate": {
@@ -36,24 +39,18 @@
     "note": "حمایت شما سرورها را پایدار و پرسرعت نگه می‌دارد",
     "items": []
   },
-  "appBanner": {
-    "enabled": true,
-    "title": "",
-    "subtitle": "",
-    "bgColor": "#11161C",
-    "textColor": "#E6F2EC",
-    "imageUrl": "",
-    "mediaVisible": true,
-    "action": "url",
-    "actionUrl": "https://t.me/Undercity_c"
+  "ts": 1783146544391,
+  "lastUpdatedAt": 1783146544391,
+  "inAppTelegram": {
+    "url": "https://t.me/Undercity_c"
   },
   "ad": {
     "enabled": true,
     "title": "",
     "subtitle": "",
     "bgColor": "#11161C",
-    "textColor": "#E6F2EC",
-    "imageUrl": "",
+    "textColor": "#000000",
+    "imageUrl": "https://raw.githubusercontent.com/aptixzero/PRF_VPN/main/adminpanel/media/banner_1783146541004.png?v=1783146544198",
     "action": "url",
     "actionUrl": "https://t.me/Undercity_c"
   }
