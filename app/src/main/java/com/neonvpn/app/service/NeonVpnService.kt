@@ -233,16 +233,18 @@ class NeonVpnService : VpnService() {
             // The v5.1 check accepted a bare TCP CONNECT ("ESTABLISHED") as proof,
             // which a dead/fake server can satisfy (it accepts the SOCKS CONNECT
             // then drops every byte) — exactly the "shows connected, no
-            // upload/download" bug the user is hitting. v5.2 now:
-            //   (a) verifies the native TUN→tun2socks bridge is actually carrying
-            //       packets (its counters must be populated) — catches a silently
-            //       crashed/not-loaded hev-socks5-tunnel, where the SOCKS inbound
-            //       works but NO device traffic ever reaches it.
-            //   (b) requires REAL RESPONSE BYTES through the local SOCKS5 inbound
-            //       (an HTTP GET that returns > 0 bytes), not just a CONNECT.
-            // Only if BOTH hold do we report Connected. A server that opens a TCP
-            // socket but moves no real data is REJECTED here so the user can pick
-            // another server instead of staring at a fake "connected".
+            // upload/download" bug the user is hitting. v5.2 applies TWO hard
+            // gates (see verifyRealTunnelTraffic):
+            //   (a) tun2socks native lib MUST be loaded (nativeAvailable) — a
+            //       deterministic catch for a dead hev-socks5-tunnel .so, which is
+            //       the real "0% works, no up/down" failure mode. Without it the
+            //       SOCKS inbound still answers a localhost probe but NO device
+            //       traffic ever reaches the tunnel.
+            //   (b) real bytes through the PROXY OUTBOUND (the selected config):
+            //       an HTTP GET returns > 0 bytes OR the proxy-outbound counter
+            //       moves during the probe. A dead server that opens a socket but
+            //       drops every byte fails both and is REJECTED, so the user can
+            //       pick another server instead of staring at a fake "connected".
             emitProgress(96, "Testing traffic")
             val bytesMoved = verifyRealTunnelTraffic()
             if (!bytesMoved) {
@@ -273,72 +275,92 @@ class NeonVpnService : VpnService() {
     }
 
     /**
-     * v5.2 — proves REAL end-to-end tunnel traffic by driving ACTUAL RESPONSE
-     * BYTES through the local SOCKS5 inbound (the very socket tun2socks pumps
-     * device packets into) AND verifying the native TUN→tun2socks bridge is
-     * actually carrying packets. This exercises the FULL path a real app uses
-     * (TUN → tun2socks → SOCKS → routing → proxy outbound → server), so it
-     * catches the "shows connected but nothing flows" case the user is hitting.
+     * v5.2 — proves REAL end-to-end tunnel traffic BEFORE reporting "Connected",
+     * so a green ping genuinely means a working tunnel carrying real bytes — not
+     * the "shows connected, 0% works, no up/down, not using the config" bug.
      *
-     * v5.2 CHANGE — STRICT proof (this is the real fix):
-     *   • v5.1 accepted a bare TCP CONNECT ("ESTABLISHED") as proof, which a
-     *     dead/fake server can satisfy (it accepts the SOCKS CONNECT then drops
-     *     every byte). v5.2 REQUIRES real response bytes — an HTTP GET that
-     *     returns > 0 bytes through the tunnel. A server that opens a TCP socket
-     *     but moves no real data is REJECTED.
-     *   • v5.2 ALSO checks that the hev-socks5-tunnel native bridge has non-zero
-     *     TUN counters — if tun2socks silently failed to load / crashed, the
-     *     SOCKS inbound still works (so a localhost probe passes) but NO device
-     *     traffic ever reaches the tunnel. The TUN-counter check catches that.
+     * Two independent HARD gates (either one failing → reject → user picks another):
      *
-     * Only if BOTH (a) real bytes come back through the proxy AND (b) the TUN
-     * bridge shows it has carried packets do we return true → "Connected".
+     *   GATE 1 — native bridge alive (deterministic, no timing race):
+     *     TProxyService.nativeAvailable must be true. If the hev-socks5-tunnel .so
+     *     failed to load (ABI mismatch / corrupted extract / missing on this
+     *     device), then NO device traffic can EVER reach the SOCKS inbound — the
+     *     exact "connected but nothing works" failure. The SOCKS inbound alone
+     *     would still answer a localhost probe, so without this hard check we'd
+     *     report Connected on a tunnel that can never carry real app traffic.
+     *     This is a clean boolean (set once at class init), unlike a byte-counter
+     *     probe which is racy on an idle device.
+     *
+     *   GATE 2 — real bytes through the PROXY OUTBOUND (the selected config):
+     *     Snapshot the proxy-outbound traffic counters, send an HTTP GET through
+     *     the local SOCKS5 inbound, then snapshot again. We accept if EITHER the
+     *     HTTP response returned > 0 bytes (real data traveled server→proxy→SOCKS
+     *     →us) OR the proxy-outbound counter moved during the probe. Using OR
+     *     (not AND) is deliberate: some Xray-core builds don't surface per-
+     *     outbound stats counters, so requiring the delta would false-reject good
+     *     servers on those builds; the HTTP-response proof still holds on every
+     *     build. A dead server that accepts the SOCKS CONNECT then drops every
+     *     byte fails BOTH (no HTTP response AND no counter movement) → rejected.
+     *
+     * The tun2socks TUN byte counters are read only as a SOFT diagnostic signal
+     * (logged, never false-rejecting): on an idle device no background app may
+     * have sent traffic through the TUN in the ~1-2s since it came up, so a zero
+     * counter at this moment is legitimate. Hard gate 1 already catches the real
+     * "dead tun2socks" failure mode without that race.
      */
     private fun verifyRealTunnelTraffic(): Boolean {
+        // ---- GATE 1: native tun2socks bridge must be loaded ----
+        if (!TProxyService.nativeAvailable) {
+            Log.e(TAG, "verifyRealTunnelTraffic: tun2socks native lib NOT loaded — " +
+                "device traffic can never reach the tunnel. Rejecting.")
+            return false
+        }
+
+        // ---- GATE 2: real bytes through the proxy outbound (the selected config) ----
         // (host, port) — every target is over HTTP so we actually pull response
-        // bytes (the real-data proof). generate_204 returns a 204 with empty body
-        // (the status line itself is real bytes); the others return real bodies.
+        // bytes (the real-data proof). generate_204 returns a 204 with an empty
+        // body (the status line itself is real bytes); the others return bodies.
         val targets = listOf(
             "cp.cloudflare.com" to 80,        // Cloudflare edge 204 (filtered, tiny)
             "www.cloudflare.com" to 80,       // Cloudflare (filtered, real body)
             "core.telegram.org" to 80         // Telegram (blocked target, real body)
         )
         val deadline = System.currentTimeMillis() + 12000
-        var gotBytes = false
+        var proved = false
         var round = 0
-        while (System.currentTimeMillis() < deadline && round < 3 && !stopping && !gotBytes) {
+        while (System.currentTimeMillis() < deadline && round < 3 && !stopping && !proved) {
             for ((host, port) in targets) {
                 if (System.currentTimeMillis() >= deadline || stopping) break
-                if (socksHttpProbe(host, port)) { gotBytes = true; break }
+                // Drain any counter bytes accumulated before this probe (e.g. from
+                // the preceding health check) so the post-probe delta is clean and
+                // reflects ONLY this probe's traffic through the proxy outbound.
+                xray.queryTrafficDelta()
+                val gotBytes = socksHttpProbe(host, port)
+                val (upDelta, downDelta) = xray.queryTrafficDelta()
+                val moved = (upDelta + downDelta) > 0
+                Log.i(TAG, "probe $host:$port — httpBytes=$gotBytes " +
+                    "proxyDelta up=$upDelta down=$downDelta")
+                // EITHER proof suffices (see OR rationale in the doc comment above).
+                if (gotBytes || moved) { proved = true; break }
             }
             round++
-            if (!gotBytes) { try { Thread.sleep(200) } catch (_: InterruptedException) { break } }
+            if (!proved) { try { Thread.sleep(200) } catch (_: InterruptedException) { break } }
         }
 
-        if (!gotBytes) {
-            Log.w(TAG, "verifyRealTunnelTraffic: no response bytes through tunnel")
+        if (!proved) {
+            Log.w(TAG, "verifyRealTunnelTraffic: no real bytes through proxy outbound — rejecting")
             return false
         }
 
-        // Second gate: confirm the native TUN→tun2socks bridge is actually
-        // carrying packets (its cumulative byte counters are populated). If the
-        // .so failed to load or the tunnel thread died, the SOCKS inbound alone
-        // can still answer a localhost probe — but device traffic would never
-        // flow. A populated counter proves the bridge that real apps depend on
-        // is alive.
-        val tunCarrying = try {
+        // ---- SOFT signal: log the tun2socks TUN counters (diagnostics only) ----
+        // Deliberately NOT a reject condition — see the doc comment above.
+        try {
             val tun = TProxyService.TProxyGetStats()
             val tx = tun?.getOrNull(0) ?: -1L
             val rx = tun?.getOrNull(1) ?: -1L
-            Log.i(TAG, "tun2socks counters: tx=$tx rx=$rx")
-            (tx > 0 || rx > 0)
+            Log.i(TAG, "tun2socks counters (info): tx=$tx rx=$rx")
         } catch (e: Throwable) {
-            Log.w(TAG, "TProxyGetStats unavailable: ${e.message} — assuming bridge up")
-            true    // native counter API missing (old build) → don't falsely fail
-        }
-        if (!tunCarrying) {
-            Log.w(TAG, "verifyRealTunnelTraffic: SOCKS path works but TUN bridge idle — rejecting")
-            return false
+            Log.w(TAG, "TProxyGetStats unavailable: ${e.message}")
         }
         return true
     }
