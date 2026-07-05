@@ -412,7 +412,7 @@ class NeonVpnService : VpnService() {
 
             // --- HTTP GET over the established tunnel — REAL BYTES proof ---
             val httpReq = "GET /generate_204 HTTP/1.1\r\nHost: $host\r\n" +
-                "User-Agent: ProfessorVPN/5.3\r\nConnection: close\r\nAccept: */*\r\n\r\n"
+                "User-Agent: ProfessorVPN/5.4\r\nConnection: close\r\nAccept: */*\r\n\r\n"
             out.write(httpReq.toByteArray(Charsets.US_ASCII)); out.flush()
 
             // Read whatever the remote sends back. Any byte at all (even just the

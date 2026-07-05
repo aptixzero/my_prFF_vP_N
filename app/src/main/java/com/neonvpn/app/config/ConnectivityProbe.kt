@@ -5,6 +5,7 @@ import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
@@ -69,8 +70,6 @@ object ConnectivityProbe {
         ctx: Context,
         onProgress: (Int) -> Unit
     ): Result = coroutineScope {
-        onProgress(2)
-
         // Interleave sources so we hit vless / vmess feeds early. Walk in pairs.
         val vlessSrc = LiveSources.VLESS
         val vmessSrc = LiveSources.VMESS
@@ -82,7 +81,47 @@ object ConnectivityProbe {
 
         val fetchGate = Semaphore(FETCH_CONCURRENCY)
         val pingGate = Semaphore(PING_CONCURRENCY)
-        val progressStep = AtomicInteger(2)
+
+        // ---- SMOOTH PROGRESS ----
+        // The bar used to jump 2 → 100 because progress only advanced when a whole
+        // source finished (which can be near-instant on failure or seconds on
+        // success). We now drive the bar from a steady time-based ticker so it
+        // ALWAYS moves, and we let real work "pull" it forward when it's ahead of
+        // the clock. The ticker eases toward 95% over the budget window; the final
+        // 100% is emitted when the probe actually completes.
+        val displayed = AtomicInteger(0)
+        // `workFloor` is raised by real progress events so genuine work can push
+        // the bar ahead of the time estimate (but never above 95 until done).
+        val workFloor = AtomicInteger(0)
+        val startNs = System.nanoTime()
+
+        fun emit(target: Int) {
+            val clamped = target.coerceIn(0, 95)
+            // Monotonic: never let the bar go backwards.
+            while (true) {
+                val cur = displayed.get()
+                if (clamped <= cur) return
+                if (displayed.compareAndSet(cur, clamped)) {
+                    onProgress(clamped)
+                    return
+                }
+            }
+        }
+
+        // Steady ticker: every 120ms nudge the bar toward a time-based estimate,
+        // eased so it decelerates as it approaches 95%. Runs until cancelled.
+        val ticker = launch {
+            while (coroutineContext.isActive) {
+                val elapsed = (System.nanoTime() - startNs) / 1_000_000L
+                val frac = (elapsed.toFloat() / BUDGET_MS.toFloat()).coerceIn(0f, 1f)
+                // Ease-out curve: fast at first, gently slowing toward the cap.
+                val eased = (1f - (1f - frac) * (1f - frac))
+                val timeTarget = (eased * 92f).toInt() + 2   // 2 .. 94 over the window
+                emit(maxOf(timeTarget, workFloor.get()))
+                delay(120)
+            }
+        }
+        emit(2)
 
         // Test a handful of candidate links from one source; set found* on success.
         suspend fun testSource(src: LiveSources.Src, isVless: Boolean) {
@@ -110,8 +149,11 @@ object ConnectivityProbe {
                     }
                 }
             }
-            val p = progressStep.addAndGet(3).coerceAtMost(95)
-            onProgress(p)
+            // Real progress "pull": raise the work floor a little each time a
+            // source finishes so genuine work can run ahead of the time estimate.
+            val step = (90 / maxOf(pairs, 1)).coerceAtLeast(1)
+            val nf = workFloor.addAndGet(step).coerceAtMost(94)
+            emit(nf)
         }
 
         // Walk source pairs until we have BOTH a vless and a vmess (or time out).
@@ -127,6 +169,7 @@ object ConnectivityProbe {
             jobs.forEach { runCatching { it.await() } }
         }
 
+        ticker.cancel()
         onProgress(100)
         Log.i(TAG, "probe done: vless=${foundVless.get() != null}, vmess=${foundVmess.get() != null}")
         Result(foundVless.get(), foundVmess.get())
