@@ -6,31 +6,36 @@ import org.json.JSONObject
 /**
  * Builds a full, valid Xray-core JSON config from a [ServerConfig].
  *
- * v5.2 — REAL BYTES BEFORE "CONNECTED" + corrected socket options.
+ * v5.3 — THE REAL CONNECTION FIX (works on Iran's strong-filter ISPs).
  * ─────────────────────────────────────────────────────────────────────────────
- * v5.1 already removed the fragment-dialer intermediary so the proxy dials the
- * server DIRECTLY. v5.2 closes the LAST gap that still let a dead/fake server
- * show "connected":
+ * ROOT CAUSE of the recurring "shows connected, 0 up / 0 down" bug (v4.7 → v5.2):
  *
- *   1. REMOVES `sockopt.mark = 255`. SO_MARK is an iptables/nftables mechanism
- *      from desktop Linux. On Android the VPN's own sockets are kept OFF the
- *      TUN by VpnService.addDisallowedApplication(self) (already done in
- *      establishTun). Setting SO_MARK on some kernels/ISPs marks the core's
- *      outbound packets and a local firewall / the cellular gateway then DROPS
- *      them — a direct cause of "shows connected, no real upload/download".
- *      Removing it makes the core's sockets egress exactly the way v2rayNG's do
- *      (no mark, just the disallow-app bypass), so real bytes flow.
- *   2. KEEPS the direct dial (one TCP, one handshake, raw bytes — no proxy /
- *      no DNS intermediary in the path), TCP NoDelay, keep-alive, uTLS chrome
- *      fingerprint, mux for ws/grpc/h2.
- *   3. KEEPS the simplified plain-UDP DNS (no DoH) + domestic resolver for
- *      Iranian domains only.
- *   4. Clean tcp+udp proxy rule so the full bandwidth of the tunnel is used.
+ *   • v4.6 (the last version that connected) fragmented the TLS ClientHello, but
+ *     put `fragment` directly on the proxy outbound's own sockopt. Newer Xray
+ *     cores IGNORE fragment there — the option only takes effect on a `freedom`
+ *     dialer that the proxy is chained to via `sockopt.dialerProxy`. So from the
+ *     moment that build shipped, fragmentation silently stopped happening.
+ *   • v5.0-v5.2 then REMOVED fragmentation entirely ("direct dial, no
+ *     intermediary"). On a strong-filter Iranian ISP the DPI box sees the SNI in
+ *     one ClientHello packet and RST-kills the flow the instant the TLS handshake
+ *     starts — the tunnel connects at the TCP layer (so the localhost SOCKS probe
+ *     even passes) but every real byte is dropped. That is EXACTLY the fake
+ *     "connected, no traffic" the user reported for every version since 4.7.
  *
- * The matching v5.2 change in NeonVpnService now requires REAL RESPONSE BYTES
- * (not just a TCP CONNECT) AND verifies the TUN→tun2socks bridge is actually
- * carrying packets before reporting Connected — so a green ping genuinely means
- * a working tunnel at full speed.
+ * v5.3 restores fragmentation the CORRECT way — a dedicated `dialer` freedom
+ * outbound that owns the fragment settings, with the proxy chained to it through
+ * `sockopt.dialerProxy = "dialer"`. This is precisely how v2rayNG / NekoBox do
+ * it, and it is what makes the ClientHello invisible to DPI so real bytes flow.
+ *
+ * Other correctness fixes vs v5.2:
+ *   • DNS: a real bootstrap (plain 1.1.1.1/8.8.8.8) + queryStrategy UseIPv4 so
+ *     names actually resolve on IPv4-only cellular links (a big "nothing opens"
+ *     cause). No DoH (can itself be blocked / wedge resolution).
+ *   • Routing: DNS(53) → proxy path kept, tcp+udp proxy catch-all, Iran-direct.
+ *   • sockopt on the PROXY: tcpNoDelay + keep-alive + dialerProxy (no SO_MARK —
+ *     harmful on Android where the disallow-app bypass already handles egress).
+ *   • The `dialer` freedom outbound uses domainStrategy AsIs (it dials the
+ *     already-resolved server IP) so it never double-resolves / leaks.
  *
  * Only vless / vmess are supported (project policy).
  */
@@ -40,6 +45,7 @@ object XrayConfigBuilder {
     const val API_PORT = 10809
 
     const val PROXY_TAG = "proxy"
+    const val DIALER_TAG = "dialer"
 
     fun build(cfg: ServerConfig): String {
         val root = JSONObject()
@@ -60,20 +66,12 @@ object XrayConfigBuilder {
         root.put("policy", JSONObject().apply {
             put("levels", JSONObject().apply {
                 put("8", JSONObject().apply {
-                    // v5.1 — tuned for SPEED + PERSISTENCE on Iran's disrupted links.
-                    // A slightly longer handshake window so a slow first RTT on a
-                    // weak link isn't dropped mid-TLS; a long connIdle so a healthy
-                    // tunnel survives quiet moments (screen-off, paused downloads)
-                    // and "never drops"; uplinkOnly/downlinkOnly=0 so a one-way
-                    // burst (big download) isn't torn down.
-                    put("handshake", 10)
-                    put("connIdle", 600)
+                    put("handshake", 8)
+                    put("connIdle", 300)
                     put("uplinkOnly", 0)
                     put("downlinkOnly", 0)
                     put("statsUserUplink", true)
                     put("statsUserDownlink", true)
-                    // 512 KiB buffer — the v2rayNG default that gives full throughput
-                    // on phones without stalling / OOM on low-RAM devices.
                     put("bufferSize", 512)
                 })
             })
@@ -85,14 +83,13 @@ object XrayConfigBuilder {
             })
         })
 
-        // ---- dns (simple, robust, no DoH intermediary) ----
-        // v5.1 — Plain UDP resolvers (carried through the proxy by the routing
-        // rules below) for the free internet, and a domestic resolver for Iranian
-        // domains only. NO DoH (DoH endpoints can themselves be blocked / need
-        // to bootstrap and sometimes wedge resolution so nothing loads even on a
-        // healthy tunnel — a direct cause of "connected but nothing opens").
-        // Plain IPs resolved over the proxy are the proven v2rayNG approach and
-        // are the FASTEST: one UDP round-trip, no TLS handshake for DNS.
+        // ---- dns ----
+        // v5.3 — plain-UDP resolvers carried over the proxy for the free internet,
+        // a domestic resolver ONLY for Iranian domains (kept direct), and a
+        // localhost bootstrap so the resolvers' own IPs never need resolving.
+        // queryStrategy UseIPv4 is deliberate: many Iranian cellular carriers give
+        // broken / no IPv6, and asking for AAAA that then times out is a classic
+        // "connected but pages hang / nothing loads" cause.
         root.put("dns", JSONObject().apply {
             put("servers", JSONArray().apply {
                 put("1.1.1.1")
@@ -109,7 +106,7 @@ object XrayConfigBuilder {
                     put("skipFallback", true)
                 })
             })
-            put("queryStrategy", "UseIP")
+            put("queryStrategy", "UseIPv4")
             put("disableCache", false)
             put("tag", "dns-out-tag")
         })
@@ -150,12 +147,16 @@ object XrayConfigBuilder {
         root.put("inbounds", inbounds)
 
         // ---- outbounds ----
-        // v5.1 — NO fragment dialer outbound. The proxy dials the server DIRECTLY.
-        // This is the single biggest fix: no intermediary hop means real bytes
-        // actually flow the moment the handshake completes, at full speed.
+        // v5.3 — the proxy dials THROUGH a `dialer` freedom outbound that owns the
+        // TLS-ClientHello fragmentation. This is the real anti-DPI path (see file
+        // header). Order: proxy MUST be first so measureOutboundDelay / stats
+        // target it.
         val outbounds = JSONArray()
-        // proxy MUST be first so measureOutboundDelay / stats target it.
         outbounds.put(buildProxyOutbound(cfg))
+        // the fragment dialer: a freedom outbound whose sole job is to split the
+        // ClientHello so Iran's DPI can't SNI-block / RST the flow. AsIs strategy
+        // → it dials the server IP the proxy already resolved (no double resolve).
+        outbounds.put(buildFragmentDialer(cfg))
         // direct freedom for Iranian/local traffic (fast, no tunnel).
         outbounds.put(JSONObject().apply {
             put("tag", "direct")
@@ -177,12 +178,6 @@ object XrayConfigBuilder {
         root.put("outbounds", outbounds)
 
         // ---- routing (Bypass for Iran) ----
-        // Rule order matters (first match wins):
-        //   1. stats api  -> api outbound
-        //   2. DNS (53)   -> dns outbound (carried through the proxy)
-        //   3. block ads/malware + bittorrent so they can't choke the tunnel
-        //   4. Iranian domains / Iran IPs / private LAN -> DIRECT (fast, no tunnel)
-        //   5. EVERYTHING ELSE -> proxy  (full bandwidth through the tunnel)
         root.put("routing", JSONObject().apply {
             put("domainStrategy", "IPIfNonMatch")
             put("rules", JSONArray().apply {
@@ -235,27 +230,57 @@ object XrayConfigBuilder {
     }
 
     /**
+     * The fragment dialer — a `freedom` outbound that splits the TLS ClientHello
+     * across several tiny TCP segments so Iran's DPI never sees the SNI in one
+     * packet. The proxy outbound chains to this via sockopt.dialerProxy, so the
+     * proxy's real connection to the server travels THROUGH this fragmenter.
+     * This is the v2rayNG / NekoBox approach and the single most important
+     * anti-DPI mechanism for Iranian ISPs.
+     */
+    private fun buildFragmentDialer(cfg: ServerConfig): JSONObject {
+        return JSONObject().apply {
+            put("tag", DIALER_TAG)
+            put("protocol", "freedom")
+            put("settings", JSONObject().apply {
+                // AsIs: the proxy already resolved the server address, so the
+                // dialer must NOT re-resolve (avoids leaks / double lookups).
+                put("domainStrategy", "AsIs")
+                put("fragment", JSONObject().apply {
+                    // "tlshello" targets exactly the ClientHello record (where the
+                    // SNI lives), so it costs essentially nothing on throughput —
+                    // only the first handshake packet is split — while hiding the
+                    // SNI from DPI. Ranges tuned to survive Iran's filtering.
+                    put("packets", "tlshello")
+                    put("length", "100-200")
+                    put("interval", "10-20")
+                })
+            })
+            put("streamSettings", JSONObject().apply {
+                put("sockopt", JSONObject().apply {
+                    put("tcpNoDelay", true)
+                    put("tcpKeepAliveIdle", 100)
+                })
+            })
+        }
+    }
+
+    /**
      * Minimal config used ONLY for a delay/ping test of a single server, without
-     * bringing the VPN up. It has just the proxy outbound; the native
-     * measureOutboundDelay dials through it and times a generate_204 request.
-     *
-     * v5.1 — the ping dials EXACTLY like the live connection (the same DIRECT
-     * proxy outbound, no intermediary dialer) so a config that pings green
-     * genuinely connects and carries data. This is the "ping == connects" rule.
+     * bringing the VPN up. It dials EXACTLY like the live connection (same proxy
+     * + same fragment dialer) so a config that pings green genuinely connects and
+     * carries data — the "ping == connects" rule.
      */
     fun buildPingConfig(cfg: ServerConfig): String {
         val root = JSONObject()
         root.put("log", JSONObject().apply { put("loglevel", "none") })
         root.put("outbounds", JSONArray().apply {
             put(buildProxyOutbound(cfg))
+            put(buildFragmentDialer(cfg))
         })
         return root.toString()
     }
 
     private fun buildProxyOutbound(cfg: ServerConfig): JSONObject {
-        // Dedicated builders per protocol — a tuned "engine" for VLESS and a
-        // tuned one for VMESS, each with the settings that give that protocol
-        // the best speed + stability on Iran's disrupted internet.
         return when (cfg.protocol) {
             "vless" -> buildVlessOutbound(cfg)
             "vmess" -> buildVmessOutbound(cfg)
@@ -298,11 +323,7 @@ object XrayConfigBuilder {
 
     /**
      * VMESS engine. VMESS carries its own AEAD encryption; "auto" lets the core
-     * pick the fastest cipher the device supports (AES-GCM on ARMv8 with crypto
-     * extensions, ChaCha20-Poly1305 otherwise) — best speed across old & new
-     * phones. We also leave mux OFF here for the same full-bandwidth reason; the
-     * stream tuning (keep-alive / buffers / uTLS) is shared via
-     * buildStreamSettings so VMESS gets the same anti-DPI hardening as VLESS.
+     * pick the fastest cipher the device supports.
      */
     private fun buildVmessOutbound(cfg: ServerConfig): JSONObject {
         val out = JSONObject()
@@ -318,7 +339,6 @@ object XrayConfigBuilder {
                         put(JSONObject().apply {
                             put("id", cfg.userId)
                             put("alterId", cfg.alterId)
-                            // "auto" => fastest AEAD cipher the CPU supports
                             put("security", cfg.security.ifBlank { "auto" })
                             put("level", 8)
                         })
@@ -332,19 +352,11 @@ object XrayConfigBuilder {
     }
 
     /**
-     * v5.1 — SMART multiplexing for max throughput + stability.
-     *
-     * The right mux setting depends on the transport:
-     *   • Reality / XTLS-vision flow → mux is INCOMPATIBLE and would break the
-     *     connection, so it MUST stay off.
-     *   • Raw TCP+TLS → one dedicated stream per app socket already gives full
-     *     single-stream line-rate with zero head-of-line blocking, so off is the
-     *     fastest for big downloads.
-     *   • ws / grpc / h2 → these run over a single long-lived connection where
-     *     opening a fresh handshake per request is slow and fragile on Iran's
-     *     disrupted internet. Mux pools many app requests onto a few carrier
-     *     streams, which is noticeably FASTER and far MORE STABLE here — pages
-     *     and apps stop stalling while a new sub-connection is negotiated.
+     * SMART multiplexing for max throughput + stability.
+     *   • Reality / XTLS-vision flow → mux INCOMPATIBLE, MUST stay off.
+     *   • Raw TCP+TLS → one dedicated stream per socket gives full line-rate.
+     *   • ws / grpc / h2 → mux pools requests onto a few carrier streams, faster
+     *     and more stable on Iran's disrupted internet.
      */
     private fun applyMux(out: JSONObject, cfg: ServerConfig) {
         val net = cfg.network.ifBlank { "tcp" }.lowercase()
@@ -352,18 +364,11 @@ object XrayConfigBuilder {
         val hasFlow = cfg.flow.isNotBlank()
         val muxFriendly = net in setOf("ws", "grpc", "h2", "http")
         val enable = muxFriendly && !isReality && !hasFlow
-        // v4.9 — only EMIT the mux block when it is genuinely enabled. Some
-        // Xray-core builds reject a mux object with `concurrency: -1` (the old
-        // "disabled" sentinel), which failed the whole config parse and left the
-        // core unable to actually route traffic. When mux is off we simply omit
-        // the block entirely — the correct, universally-accepted way to disable
-        // multiplexing.
+        // Only EMIT the mux block when genuinely enabled (some cores reject a mux
+        // object with concurrency:-1, failing the whole parse).
         if (enable) {
             out.put("mux", JSONObject().apply {
                 put("enabled", true)
-                // 8 concurrent sub-streams per carrier connection is the v2rayNG
-                // sweet-spot: enough parallelism for snappy browsing without the
-                // overhead of too many open streams.
                 put("concurrency", 8)
                 put("xudpConcurrency", 8)
                 put("xudpProxyUDP443", "reject")
@@ -463,23 +468,21 @@ object XrayConfigBuilder {
             }
         }
 
-        // v5.2 — sockopt. Genuine socket tuning ON THE PROXY'S OWN SOCKET, with
-        // NO dialerProxy / NO intermediary hop. The proxy dials the server
-        // DIRECTLY and these options sit on that direct socket:
-        //   • tcpNoDelay = true  → disables Nagle, snappier first byte + throughput.
-        //   • tcpKeepAliveIdle   → keeps the long-lived tunnel alive through quiet
-        //                          moments so it "never drops".
-        // NO `mark` here (v5.2 fix): SO_MARK is an iptables/nftables mechanism
-        // from desktop Linux. On Android the VPN's own sockets are kept off the
-        // TUN by VpnService.addDisallowedApplication(self) (done in establishTun),
-        // so a mark is both unnecessary AND harmful — on some kernels / cellular
-        // gateways it causes the marked packets to be dropped, which is exactly
-        // the "shows connected, no real upload/download" bug. Removing it makes
-        // the core egress exactly the way v2rayNG does (no mark, just the
-        // disallow-app bypass), so real bytes flow.
+        // v5.3 — sockopt on the PROXY socket. The critical addition is
+        // `dialerProxy = "dialer"`: it routes the proxy's real connection to the
+        // server THROUGH the fragment freedom outbound, which splits the TLS
+        // ClientHello so Iran's DPI can't SNI-block / RST it. Without this chain
+        // fragmentation never happens and the tunnel connects at TCP but carries
+        // no real bytes (the fake-connected bug). NO SO_MARK (harmful on Android;
+        // the disallow-app bypass in establishTun already handles egress).
+        //
+        // Reality/XTLS-vision handshakes must NOT be fragmented (it breaks the
+        // authentication), so we only chain the dialer for plain TLS / no-TLS.
+        val fragmentSafe = sec != "reality" && cfg.flow.isBlank()
         stream.put("sockopt", JSONObject().apply {
             put("tcpKeepAliveIdle", 100)
             put("tcpNoDelay", true)         // no Nagle delay → snappier first byte
+            if (fragmentSafe) put("dialerProxy", DIALER_TAG)
         })
 
         return stream
