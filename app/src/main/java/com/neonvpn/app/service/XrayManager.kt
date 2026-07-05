@@ -135,10 +135,9 @@ class XrayManager(private val context: Context) {
     @Volatile private var totalDown = 0L
 
     /** Round-trip delay test through the running core (ms), -1 on error.
-     *  v4.4 — probes a CENSORED edge (Cloudflare), NOT Google. Google is open on
-     *  every ISP so it can't tell a working tunnel from a broken one; Cloudflare's
-     *  edge is filtered on many strong-filter ISPs, so a healthy reading here
-     *  genuinely means the tunnel is still bypassing censorship. */
+     *  v5.4 — probes the SAME endpoint set the per-config ping uses so the two
+     *  numbers stay consistent (no more "pings 100 but connects at 700"). The
+     *  targets are real, tiny 204 endpoints reached THROUGH the proxy outbound. */
     fun measureDelay(url: String = "https://cp.cloudflare.com/generate_204"): Long {
         val c = controller ?: return -1
         // v4.8 — try the primary endpoint, then fall back through the censored-edge

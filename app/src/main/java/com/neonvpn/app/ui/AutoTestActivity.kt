@@ -1,6 +1,8 @@
 package com.neonvpn.app.ui
 
+import android.animation.ObjectAnimator
 import android.os.Bundle
+import android.view.animation.DecelerateInterpolator
 import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.lifecycle.lifecycleScope
@@ -32,6 +34,7 @@ class AutoTestActivity : BaseActivity() {
     private lateinit var bar: ProgressBar
     private lateinit var percent: TextView
     private var probeJob: Job? = null
+    private var barAnimator: ObjectAnimator? = null
     @Volatile private var finished = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -39,6 +42,7 @@ class AutoTestActivity : BaseActivity() {
         setContentView(R.layout.activity_auto_test)
         bar = findViewById(R.id.probe_bar)
         percent = findViewById(R.id.probe_percent)
+        bar.max = 100
 
         findViewById<TextView>(R.id.btn_probe_cancel).setOnClickListener {
             finishSafely()
@@ -53,7 +57,7 @@ class AutoTestActivity : BaseActivity() {
                 ConnectivityProbe.probe(applicationContext) { p ->
                     runOnUiThread {
                         if (!isFinishing) {
-                            bar.progress = p
+                            animateBarTo(p)
                             percent.text = "$p%"
                         }
                     }
@@ -106,6 +110,22 @@ class AutoTestActivity : BaseActivity() {
         }
     }
 
+    /**
+     * Tween the ProgressBar from its current value to [target] so motion is
+     * buttery-smooth even when the probe reports progress in discrete jumps.
+     * Never goes backwards.
+     */
+    private fun animateBarTo(target: Int) {
+        val clamped = target.coerceIn(0, 100)
+        if (clamped <= bar.progress) return
+        barAnimator?.cancel()
+        val anim = ObjectAnimator.ofInt(bar, "progress", bar.progress, clamped)
+        anim.duration = if (clamped >= 100) 260L else 380L
+        anim.interpolator = DecelerateInterpolator()
+        barAnimator = anim
+        anim.start()
+    }
+
     private fun finishSafely() {
         if (finished) return
         finished = true
@@ -115,6 +135,7 @@ class AutoTestActivity : BaseActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        runCatching { barAnimator?.cancel() }
         runCatching { probeJob?.cancel() }
     }
 }
