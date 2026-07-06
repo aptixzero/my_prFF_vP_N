@@ -1,5 +1,5 @@
 {
-  "version": 15,
+  "version": 16,
   "latestApkVersion": "5.5",
   "appLogo": {
     "url": ""
@@ -37,32 +37,10 @@
     "enabled": true,
     "heading": "از پروژه حمایت کنید",
     "note": "حمایت شما سرورها را پایدار و پرسرعت نگه می‌دارد",
-    "items": [
-      {
-        "id": "usdt",
-        "coin": "USDT (TRC20)",
-        "address": "TQqMKjwi3sxE53kbsvDvoC98KCTn1MVX7X",
-        "logoUrl": "",
-        "network": "usdt"
-      },
-      {
-        "id": "trx",
-        "coin": "TRON (TRC20)",
-        "address": "TQqMKjwi3sxE53kbsvDvoC98KCTn1MVX7X",
-        "logoUrl": "",
-        "network": "trx"
-      },
-      {
-        "id": "ton",
-        "coin": "TON",
-        "address": "UQCT9g2PrxcqOGtuZHaN1czoujTH0OWRp6zpjyo2HfqnZ_JF",
-        "logoUrl": "",
-        "network": "ton"
-      }
-    ]
+    "items": []
   },
-  "ts": 1783322378063,
-  "lastUpdatedAt": 1783322378063,
+  "ts": 1783322484640,
+  "lastUpdatedAt": 1783322484640,
   "inAppTelegram": {
     "url": "https://t.me/Undercity_c"
   },
