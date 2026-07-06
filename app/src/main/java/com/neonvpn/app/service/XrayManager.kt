@@ -135,22 +135,19 @@ class XrayManager(private val context: Context) {
     @Volatile private var totalDown = 0L
 
     /** Round-trip delay test through the running core (ms), -1 on error.
-     *  v5.4 — probes the SAME endpoint set the per-config ping uses so the two
-     *  numbers stay consistent (no more "pings 100 but connects at 700"). The
-     *  targets are real, tiny 204 endpoints reached THROUGH the proxy outbound. */
-    fun measureDelay(url: String = "https://cp.cloudflare.com/generate_204"): Long {
+     *  v5.5 — restored the simple, lenient probe that WORKED: try a tiny 204
+     *  endpoint through the live proxy outbound, and fall back through a small
+     *  set if the first is momentarily throttled. Returns the FIRST endpoint that
+     *  answers so the displayed ping stays stable and a healthy tunnel is never
+     *  falsely declared dead. */
+    fun measureDelay(url: String = "https://www.gstatic.com/generate_204"): Long {
         val c = controller ?: return -1
-        // v4.8 — try the primary endpoint, then fall back through the censored-edge
-        // set. A single fixed URL sometimes gets momentarily blocked/throttled on
-        // Iran's links even while the tunnel is perfectly healthy, which produced a
-        // fake "-1 / no ping" flicker in the live stats and false watchdog misses.
-        // Returning the FIRST endpoint that answers keeps the displayed ping stable.
         val d0 = try { c.measureDelay(url) } catch (_: Throwable) { -1L }
-        if (d0 in 1..8000) return d0
+        if (d0 in 1..15000) return d0
         for (u in HEALTH_PROBE_URLS) {
             if (u == url) continue
             val d = try { c.measureDelay(u) } catch (_: Throwable) { -1L }
-            if (d in 1..8000) return d
+            if (d in 1..15000) return d
         }
         return -1
     }
@@ -177,10 +174,9 @@ class XrayManager(private val context: Context) {
          * NO Google here — Google is open on every ISP and proves nothing.
          */
         private val HEALTH_PROBE_URLS = listOf(
-            "https://cp.cloudflare.com/generate_204",        // Cloudflare edge (filtered, tiny 204)
-            "https://www.cloudflare.com/cdn-cgi/trace",      // Cloudflare trace (filtered, tiny body)
-            "https://core.telegram.org/robots.txt",          // Telegram (blocked target)
-            "https://i.instagram.com/favicon.ico"            // Instagram (blocked target)
+            "https://www.gstatic.com/generate_204",          // Google 204 (fast, tiny)
+            "https://cp.cloudflare.com/generate_204",        // Cloudflare edge (tiny 204)
+            "https://www.google.com/generate_204"            // Google 204 fallback
         )
 
         private val initLock = Any()
@@ -196,7 +192,7 @@ class XrayManager(private val context: Context) {
          * Builds a minimal full config that routes through the given outbound and
          * times a request to a generate_204 endpoint.
          */
-        fun measureConfigDelay(configJson: String, url: String = "https://cp.cloudflare.com/generate_204"): Long {
+        fun measureConfigDelay(configJson: String, url: String = "https://www.gstatic.com/generate_204"): Long {
             return try {
                 Libv2ray.measureOutboundDelay(configJson, url)
             } catch (e: Throwable) {

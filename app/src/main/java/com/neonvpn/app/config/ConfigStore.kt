@@ -50,6 +50,13 @@ class ConfigStore(context: Context) {
             dedupKeys.add(ConfigParser.dedupKey(c))
         }
 
+        // v5.5 — sequential "Server N" naming. When configs are copied/pasted we
+        // do NOT keep the original remark baked into the link; every saved config
+        // is renamed "Server 1", "Server 2", … in the order the list grows. The
+        // next number continues from however many configs are already stored, so a
+        // second paste keeps counting up instead of restarting at 1.
+        var seq = current.size
+
         var added = 0
         for (s in newOnes) {
             // de-dup by stable identity (more reliable than rawLink, which can
@@ -62,7 +69,10 @@ class ConfigStore(context: Context) {
             val have = locationCounts[loc] ?: 0
             if (have >= ConfigFetcher.MAX_PER_LOCATION) continue
 
-            current.add(s)
+            seq++
+            val renamed = s.copy(remark = "Server $seq")
+
+            current.add(renamed)
             dedupKeys.add(key)
             locationCounts[loc] = have + 1
             added++

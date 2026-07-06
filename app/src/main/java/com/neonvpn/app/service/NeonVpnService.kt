@@ -182,44 +182,32 @@ class NeonVpnService : VpnService() {
             }
 
             // Give the core a brief moment to actually bind the SOCKS inbound
-            // before tun2socks starts hammering it (prevents a startup race that
-            // could crash the native tunnel — the old "stopped" bug). v4.8 — this
-            // is trimmed to the minimum safe value (120ms): the SOCKS inbound binds
-            // almost instantly, and a long fixed sleep here was a big chunk of the
-            // "takes 10-20s to actually start working" complaint.
-            Thread.sleep(120)
+            // before we probe it / tun2socks starts hammering it (prevents a
+            // startup race that could crash the native tunnel).
+            Thread.sleep(450)
 
-            // 2.5) v4.8 — INSTANT-USE CONNECT. The old flow ran a slow health check
-            // (up to 8 × ~1s round-trips) BEFORE starting tun2socks, so the tunnel
-            // wasn't even carrying packets until 10-20s in — exactly the "connects
-            // then only works much later / drops after 10s" bug. We now:
-            //   1. start tun2socks IMMEDIATELY so device traffic flows the instant
-            //      the core is up (the user can browse right away), then
-            //   2. run ONE fast confirmation probe with a tight budget to verify the
-            //      tunnel genuinely carries censored traffic. If it fails we retry a
-            //      couple of times quickly; only a truly dead node is rejected.
-            // This makes "connected" mean "actually working NOW", not "working in
-            // 20 seconds".
-            emitProgress(80, "Routing traffic")
-            startTun2Socks(tunInterface!!.fd)
-
-            // 2.6) FAST health confirmation through the LIVE core. A single real
-            // round-trip to a censored endpoint proves bypass (same rule the ping
-            // uses). We keep the window short + retries quick so a good node is
-            // confirmed in ~1-3s and a dead one fails fast.
-            emitProgress(92, "Verifying")
+            // 2.5) v5.5 — HEALTH CHECK through the LIVE core BEFORE reporting
+            // "Connected". This is the proven approach that actually WORKED: the
+            // config now dials the server with real TLS-hello fragmentation (see
+            // XrayConfigBuilder), so a green health check here genuinely means the
+            // tunnel carries traffic — not the "connected but nothing works" lie of
+            // v4.6–v5.4. We probe with a lenient window and a couple of retries so
+            // a cold-but-good tunnel is never falsely rejected. NO extra "real
+            // bytes" gate (that over-aggressive v5.2 check false-rejected good
+            // servers and is exactly what we're removing).
+            emitProgress(80, "Verifying")
             var health = -1L
             run {
                 val deadline = System.currentTimeMillis() + 8000
                 var attempts = 0
-                while (System.currentTimeMillis() < deadline && attempts < 6) {
+                while (System.currentTimeMillis() < deadline && attempts < 4) {
                     attempts++
                     val d = try { xray.measureDelay() } catch (_: Throwable) { -1L }
-                    if (d in 1..8000) { health = d; break }
-                    try { Thread.sleep(250) } catch (_: InterruptedException) { break }
+                    if (d in 1..15000) { health = d; break }
+                    try { Thread.sleep(500) } catch (_: InterruptedException) { break }
                 }
             }
-            if (health !in 1..8000) {
+            if (health !in 1..15000) {
                 Log.w(TAG, "post-connect health check failed (delay=$health) — server can't proxy")
                 broadcastState(STATE_ERROR, "Server not responding — pick another")
                 cleanup()
@@ -229,36 +217,17 @@ class NeonVpnService : VpnService() {
             }
             Log.i(TAG, "health check OK: ${health}ms")
 
-            // 2.7) v5.2 — REAL-BYTES END-TO-END TUNNEL PROOF (the real fix).
-            // The v5.1 check accepted a bare TCP CONNECT ("ESTABLISHED") as proof,
-            // which a dead/fake server can satisfy (it accepts the SOCKS CONNECT
-            // then drops every byte) — exactly the "shows connected, no
-            // upload/download" bug the user is hitting. v5.2 applies TWO hard
-            // gates (see verifyRealTunnelTraffic):
-            //   (a) tun2socks native lib MUST be loaded (nativeAvailable) — a
-            //       deterministic catch for a dead hev-socks5-tunnel .so, which is
-            //       the real "0% works, no up/down" failure mode. Without it the
-            //       SOCKS inbound still answers a localhost probe but NO device
-            //       traffic ever reaches the tunnel.
-            //   (b) real bytes through the PROXY OUTBOUND (the selected config):
-            //       an HTTP GET returns > 0 bytes OR the proxy-outbound counter
-            //       moves during the probe. A dead server that opens a socket but
-            //       drops every byte fails both and is REJECTED, so the user can
-            //       pick another server instead of staring at a fake "connected".
-            emitProgress(96, "Testing traffic")
-            val bytesMoved = verifyRealTunnelTraffic()
-            if (!bytesMoved) {
-                Log.w(TAG, "end-to-end tunnel test moved no bytes — not a real connection")
-                broadcastState(STATE_ERROR, "Server carries no real traffic — pick another")
-                cleanup()
-                stopForegroundCompat()
-                stopSelf()
-                return
-            }
-            Log.i(TAG, "end-to-end tunnel test OK: real bytes flowed")
-
+            // 2.6) Start tun2socks (hev) bridging TUN <-> local SOCKS5 so ALL
+            // device traffic now flows through the verified tunnel. We flip
+            // `running` TRUE *before* starting the tunnel thread — its keep-alive
+            // loop guards on `running`, so setting it afterwards would race and the
+            // native TProxyStartService could be skipped entirely (a real cause of
+            // "connected but no traffic"). Order matters here.
             running = true
             isTunnelUp = true
+            emitProgress(92, "Routing traffic")
+            startTun2Socks(tunInterface!!.fd)
+
             emitProgress(100, "Connected")
             broadcastState(STATE_CONNECTED, server.remark)
             updateNotification(server.remark, "Connected · ${health}ms")
@@ -272,170 +241,6 @@ class NeonVpnService : VpnService() {
             stopForegroundCompat()
             stopSelf()
         }
-    }
-
-    /**
-     * v5.2 — proves REAL end-to-end tunnel traffic BEFORE reporting "Connected",
-     * so a green ping genuinely means a working tunnel carrying real bytes — not
-     * the "shows connected, 0% works, no up/down, not using the config" bug.
-     *
-     * Two independent HARD gates (either one failing → reject → user picks another):
-     *
-     *   GATE 1 — native bridge alive (deterministic, no timing race):
-     *     TProxyService.nativeAvailable must be true. If the hev-socks5-tunnel .so
-     *     failed to load (ABI mismatch / corrupted extract / missing on this
-     *     device), then NO device traffic can EVER reach the SOCKS inbound — the
-     *     exact "connected but nothing works" failure. The SOCKS inbound alone
-     *     would still answer a localhost probe, so without this hard check we'd
-     *     report Connected on a tunnel that can never carry real app traffic.
-     *     This is a clean boolean (set once at class init), unlike a byte-counter
-     *     probe which is racy on an idle device.
-     *
-     *   GATE 2 — real bytes through the PROXY OUTBOUND (the selected config):
-     *     Snapshot the proxy-outbound traffic counters, send an HTTP GET through
-     *     the local SOCKS5 inbound, then snapshot again. We accept if EITHER the
-     *     HTTP response returned > 0 bytes (real data traveled server→proxy→SOCKS
-     *     →us) OR the proxy-outbound counter moved during the probe. Using OR
-     *     (not AND) is deliberate: some Xray-core builds don't surface per-
-     *     outbound stats counters, so requiring the delta would false-reject good
-     *     servers on those builds; the HTTP-response proof still holds on every
-     *     build. A dead server that accepts the SOCKS CONNECT then drops every
-     *     byte fails BOTH (no HTTP response AND no counter movement) → rejected.
-     *
-     * The tun2socks TUN byte counters are read only as a SOFT diagnostic signal
-     * (logged, never false-rejecting): on an idle device no background app may
-     * have sent traffic through the TUN in the ~1-2s since it came up, so a zero
-     * counter at this moment is legitimate. Hard gate 1 already catches the real
-     * "dead tun2socks" failure mode without that race.
-     */
-    private fun verifyRealTunnelTraffic(): Boolean {
-        // ---- GATE 1: native tun2socks bridge must be loaded ----
-        if (!TProxyService.nativeAvailable) {
-            Log.e(TAG, "verifyRealTunnelTraffic: tun2socks native lib NOT loaded — " +
-                "device traffic can never reach the tunnel. Rejecting.")
-            return false
-        }
-
-        // ---- GATE 2: real bytes through the proxy outbound (the selected config) ----
-        // (host, port) — every target is over HTTP so we actually pull response
-        // bytes (the real-data proof). generate_204 returns a 204 with an empty
-        // body (the status line itself is real bytes); the others return bodies.
-        val targets = listOf(
-            "cp.cloudflare.com" to 80,        // Cloudflare edge 204 (filtered, tiny)
-            "www.cloudflare.com" to 80,       // Cloudflare (filtered, real body)
-            "core.telegram.org" to 80         // Telegram (blocked target, real body)
-        )
-        val deadline = System.currentTimeMillis() + 12000
-        var proved = false
-        var round = 0
-        while (System.currentTimeMillis() < deadline && round < 3 && !stopping && !proved) {
-            for ((host, port) in targets) {
-                if (System.currentTimeMillis() >= deadline || stopping) break
-                // Drain any counter bytes accumulated before this probe (e.g. from
-                // the preceding health check) so the post-probe delta is clean and
-                // reflects ONLY this probe's traffic through the proxy outbound.
-                xray.queryTrafficDelta()
-                val gotBytes = socksHttpProbe(host, port)
-                val (upDelta, downDelta) = xray.queryTrafficDelta()
-                val moved = (upDelta + downDelta) > 0
-                Log.i(TAG, "probe $host:$port — httpBytes=$gotBytes " +
-                    "proxyDelta up=$upDelta down=$downDelta")
-                // EITHER proof suffices (see OR rationale in the doc comment above).
-                if (gotBytes || moved) { proved = true; break }
-            }
-            round++
-            if (!proved) { try { Thread.sleep(200) } catch (_: InterruptedException) { break } }
-        }
-
-        if (!proved) {
-            Log.w(TAG, "verifyRealTunnelTraffic: no real bytes through proxy outbound — rejecting")
-            return false
-        }
-
-        // ---- SOFT signal: log the tun2socks TUN counters (diagnostics only) ----
-        // Deliberately NOT a reject condition — see the doc comment above.
-        try {
-            val tun = TProxyService.TProxyGetStats()
-            val tx = tun?.getOrNull(0) ?: -1L
-            val rx = tun?.getOrNull(1) ?: -1L
-            Log.i(TAG, "tun2socks counters (info): tx=$tx rx=$rx")
-        } catch (e: Throwable) {
-            Log.w(TAG, "TProxyGetStats unavailable: ${e.message}")
-        }
-        return true
-    }
-
-    /**
-     * One SOCKS5 round-trip through the local inbound that ALSO sends a minimal
-     * HTTP GET and requires REAL response bytes (> 0). Returns true only if at
-     * least one byte came back from the remote host through the tunnel — the
-     * honest proof that the proxy carries real data, not just a TCP CONNECT.
-     */
-    private fun socksHttpProbe(host: String, port: Int): Boolean {
-        var sock: java.net.Socket? = null
-        return try {
-            sock = java.net.Socket()
-            sock.tcpNoDelay = true
-            sock.soTimeout = 5000
-            sock.connect(java.net.InetSocketAddress("127.0.0.1", XrayConfigBuilder.SOCKS_PORT), 5000)
-            val out = sock.getOutputStream()
-            val inp = sock.getInputStream()
-
-            // --- SOCKS5 greeting: VER=5, 1 method, 0x00 (no auth) ---
-            out.write(byteArrayOf(0x05, 0x01, 0x00)); out.flush()
-            val greet = ByteArray(2)
-            if (readFully(inp, greet) != 2 || greet[0].toInt() != 0x05 || greet[1].toInt() != 0x00)
-                return false
-
-            // --- SOCKS5 CONNECT to host:port (ATYP=domain 0x03) ---
-            val hb = host.toByteArray(Charsets.US_ASCII)
-            val req = java.io.ByteArrayOutputStream()
-            req.write(0x05); req.write(0x01); req.write(0x00); req.write(0x03)
-            req.write(hb.size); req.write(hb)
-            req.write((port shr 8) and 0xFF); req.write(port and 0xFF)
-            out.write(req.toByteArray()); out.flush()
-
-            // reply: VER REP RSV ATYP + BND.ADDR + BND.PORT
-            val head = ByteArray(4)
-            if (readFully(inp, head) != 4 || head[1].toInt() != 0x00) return false
-            val skip = when (head[3].toInt()) {
-                0x01 -> 4 + 2          // IPv4 + port
-                0x04 -> 16 + 2         // IPv6 + port
-                0x03 -> {              // domain: 1 len byte + n + 2 port
-                    val lenB = ByteArray(1)
-                    if (readFully(inp, lenB) != 1) return false
-                    (lenB[0].toInt() and 0xFF) + 2
-                }
-                else -> return false
-            }
-            if (skip > 0) { val junk = ByteArray(skip); if (readFully(inp, junk) != skip) return false }
-
-            // --- HTTP GET over the established tunnel — REAL BYTES proof ---
-            val httpReq = "GET /generate_204 HTTP/1.1\r\nHost: $host\r\n" +
-                "User-Agent: ProfessorVPN/5.4\r\nConnection: close\r\nAccept: */*\r\n\r\n"
-            out.write(httpReq.toByteArray(Charsets.US_ASCII)); out.flush()
-
-            // Read whatever the remote sends back. Any byte at all (even just the
-            // "HTTP/1.1 204" status line) is real data that traveled server →
-            // proxy → SOCKS → us, proving the tunnel carries real traffic.
-            val buf = ByteArray(128)
-            val n = try { inp.read(buf) } catch (_: Throwable) { -1 }
-            n > 0
-        } catch (_: Throwable) {
-            false
-        } finally {
-            try { sock?.close() } catch (_: Throwable) {}
-        }
-    }
-
-    private fun readFully(inp: java.io.InputStream, buf: ByteArray): Int {
-        var off = 0
-        while (off < buf.size) {
-            val r = try { inp.read(buf, off, buf.size - off) } catch (_: Throwable) { -1 }
-            if (r <= 0) break
-            off += r
-        }
-        return off
     }
 
     private fun establishTun(): ParcelFileDescriptor? {

@@ -6,28 +6,29 @@ import org.json.JSONObject
 /**
  * Builds a full, valid Xray-core JSON config from a [ServerConfig].
  *
- * v5.4 — DEAD-SIMPLE DIRECT CONNECTION (no DNS block, no proxy intermediary,
- * no fragment dialer, no dialerProxy). This is the smallest config that a real
- * Xray core needs to carry traffic, and it dials the selected config's server
- * DIRECTLY. Nothing sits between the device and the config's server except the
- * SOCKS inbound that tun2socks feeds and the proxy outbound itself.
+ * v5.5 — REAL WORKING TUNNEL (restored from the last known-good method).
  *
- * WHY the previous versions failed:
- *   • v5.3 added a `fragment` freedom dialer chained via `sockopt.dialerProxy`.
- *     The live tunnel then dialed:  socks-in → routing → proxy → dialerProxy →
- *     server. But the per-config PING used `measureOutboundDelay`, which times
- *     ONLY the proxy outbound handshake and does NOT walk the dialerProxy chain
- *     — so ping measured a different (shorter) path than the live tunnel. That
- *     is exactly "pings 100ms, connects at 700ms", and on many cores the
- *     dialerProxy chain simply broke the live tunnel so no bytes flowed at all.
- *   • The `dns` block (custom servers / domestic resolver / queryStrategy) could
- *     wedge name resolution on some ISPs so nothing loaded even on a live tunnel.
+ * The v4.6 → v5.4 line was BROKEN: those versions kept stripping the pieces that
+ * actually make the tunnel carry traffic on a filtered network. v5.3 hid the
+ * anti-DPI fragmentation behind a `dialerProxy` chain (which measureOutboundDelay
+ * does NOT walk, so ping lied and the live path often broke); v5.4 then removed
+ * the DNS block AND the fragmentation entirely — leaving a config that finishes
+ * a TCP/TLS handshake (so ping is green and the UI turns "Connected") yet gets
+ * its ClientHello RST-injected by DPI, so NO real bytes ever flow. That is
+ * exactly the "shows connected but nothing works / doesn't use the config" bug.
  *
- * v5.4 removes every one of those moving parts. The outbound dials the server
- * directly; ping and connect use the SAME outbound, so a green ping is the real
- * latency the live tunnel will have. No DNS block at all — the core resolves
- * names itself over the proxy the plain way, and the device's own DNS (sent to
- * the TUN and carried through the SOCKS inbound) just works.
+ * This version goes back to the proven approach — the one that WORKED:
+ *
+ *   1. A proper `dns` block (encrypted DoH for the free internet to beat DNS
+ *      poisoning + a domestic resolver for Iranian domains) so name resolution
+ *      never wedges and local sites stay fast.
+ *   2. TLS-ClientHello FRAGMENTATION applied DIRECTLY in the proxy outbound's own
+ *      `streamSettings.sockopt.fragment` (NOT via a dialerProxy chain). Splitting
+ *      the ClientHello across tiny TCP segments hides the SNI from DPI, so the
+ *      connection survives instead of being reset — this is what makes real
+ *      traffic actually flow through the selected config.
+ *   3. Full-tunnel routing: everything except Iranian domains / private LAN goes
+ *      through the proxy, at full bandwidth — a fast filtershkan, not a proxy.
  *
  * Only vless / vmess are supported (project policy).
  */
@@ -53,21 +54,56 @@ object XrayConfigBuilder {
         root.put("policy", JSONObject().apply {
             put("levels", JSONObject().apply {
                 put("8", JSONObject().apply {
-                    put("handshake", 8)
+                    put("handshake", 4)
                     put("connIdle", 300)
+                    put("uplinkOnly", 1)
+                    put("downlinkOnly", 1)
                     put("statsUserUplink", true)
                     put("statsUserDownlink", true)
+                    // Larger per-connection buffer => higher throughput on big
+                    // transfers (full bandwidth). 1 MiB is a strong, safe
+                    // sweet-spot without spiking RAM on weak phones.
+                    put("bufferSize", 1024)
                 })
             })
             put("system", JSONObject().apply {
+                put("statsInboundUplink", true)
+                put("statsInboundDownlink", true)
                 put("statsOutboundUplink", true)
                 put("statsOutboundDownlink", true)
             })
         })
 
+        // ---- dns (anti-poisoning + Iran-aware) ----
+        // Encrypted DoH resolvers defeat Iran's DNS poisoning for the free
+        // internet; a fast domestic resolver handles Iranian domains so they stay
+        // direct and snappy. Without a working DNS block, name resolution can
+        // wedge on some ISPs and nothing loads even on a live tunnel.
+        root.put("dns", JSONObject().apply {
+            put("servers", JSONArray().apply {
+                put("https://1.1.1.1/dns-query")
+                put("https://dns.google/dns-query")
+                put("1.1.1.1")
+                put("8.8.8.8")
+                put(JSONObject().apply {
+                    put("address", "78.157.42.100")           // domestic resolver
+                    put("port", 53)
+                    put("domains", JSONArray().apply {
+                        put("geosite:category-ir")
+                        put("domain:ir")
+                    })
+                    put("skipFallback", true)
+                })
+            })
+            put("queryStrategy", "UseIP")
+            put("disableCache", false)
+            put("disableFallbackIfMatch", true)
+            put("tag", "dns-out-tag")
+        })
+
         // ---- inbounds ----
         // SOCKS inbound that tun2socks feeds all device traffic into, and a
-        // dokodemo-door for the stats API. NO dns inbound / dns block anywhere.
+        // dokodemo-door for the stats API.
         val inbounds = JSONArray()
         inbounds.put(JSONObject().apply {
             put("tag", "socks-in")
@@ -82,7 +118,7 @@ object XrayConfigBuilder {
             })
             put("sniffing", JSONObject().apply {
                 put("enabled", true)
-                put("destOverride", JSONArray().apply { put("http"); put("tls") })
+                put("destOverride", JSONArray().apply { put("http"); put("tls"); put("quic") })
                 put("routeOnly", false)
             })
         })
@@ -101,7 +137,8 @@ object XrayConfigBuilder {
 
         // ---- outbounds ----
         // proxy FIRST so measureDelay / stats target it. Then a plain freedom for
-        // the (very few) things routing sends direct, and a blackhole for blocks.
+        // Iranian/local traffic, a dns outbound so the core's own queries resolve,
+        // and a blackhole for blocks.
         val outbounds = JSONArray()
         outbounds.put(buildProxyOutbound(cfg))
         outbounds.put(JSONObject().apply {
@@ -110,17 +147,27 @@ object XrayConfigBuilder {
             put("settings", JSONObject().apply { put("domainStrategy", "UseIP") })
         })
         outbounds.put(JSONObject().apply {
+            put("tag", "dns-out")
+            put("protocol", "dns")
+        })
+        outbounds.put(JSONObject().apply {
             put("tag", "block")
             put("protocol", "blackhole")
+            put("settings", JSONObject().apply {
+                put("response", JSONObject().apply { put("type", "http") })
+            })
         })
         root.put("outbounds", outbounds)
 
-        // ---- routing ----
-        // Dead simple: stats api → api; private LAN → direct; EVERYTHING ELSE →
-        // proxy (tcp+udp). No geo rules, no DNS routing — the config's server
-        // carries all the user's traffic, using its full speed.
+        // ---- routing (full-tunnel, Iran-aware) ----
+        // Order matters (first match wins):
+        //   1. stats api  -> api outbound
+        //   2. DNS (53)   -> dns outbound
+        //   3. bittorrent -> block (so it can't saturate the tunnel)
+        //   4. Iranian domains / Iran IPs / private LAN -> DIRECT (fast, no tunnel)
+        //   5. EVERYTHING ELSE -> proxy (full bandwidth through the tunnel)
         root.put("routing", JSONObject().apply {
-            put("domainStrategy", "AsIs")
+            put("domainStrategy", "IPIfNonMatch")
             put("rules", JSONArray().apply {
                 put(JSONObject().apply {
                     put("type", "field")
@@ -129,13 +176,34 @@ object XrayConfigBuilder {
                 })
                 put(JSONObject().apply {
                     put("type", "field")
-                    put("ip", JSONArray().apply { put("geoip:private") })
+                    put("port", 53)
+                    put("outboundTag", "dns-out")
+                })
+                put(JSONObject().apply {
+                    put("type", "field")
+                    put("outboundTag", "block")
+                    put("protocol", JSONArray().apply { put("bittorrent") })
+                })
+                put(JSONObject().apply {
+                    put("type", "field")
                     put("outboundTag", "direct")
+                    put("domain", JSONArray().apply {
+                        put("geosite:category-ir")
+                        put("domain:ir")
+                    })
+                })
+                put(JSONObject().apply {
+                    put("type", "field")
+                    put("outboundTag", "direct")
+                    put("ip", JSONArray().apply {
+                        put("geoip:ir")
+                        put("geoip:private")
+                    })
                 })
                 put(JSONObject().apply {
                     put("type", "field")
                     put("outboundTag", PROXY_TAG)
-                    put("network", "tcp,udp")
+                    put("port", "0-65535")
                 })
             })
         })
@@ -145,9 +213,8 @@ object XrayConfigBuilder {
 
     /**
      * Minimal config for a per-config ping — the SAME outbound the live connect
-     * uses (no dialerProxy, no fragment, no DNS), so the measured latency is the
-     * real latency the tunnel will have. This is the "ping == connects" rule,
-     * done honestly: identical dialing path.
+     * uses (identical fragmentation + stream settings), so the measured latency
+     * is the real latency the tunnel will have. "ping == connects", done honestly.
      */
     fun buildPingConfig(cfg: ServerConfig): String {
         val root = JSONObject()
@@ -187,7 +254,13 @@ object XrayConfigBuilder {
             })
         })
         out.put("streamSettings", buildStreamSettings(cfg))
-        applyMux(out, cfg)
+        // Mux OFF for VLESS: Reality/XTLS-vision are incompatible with mux, and
+        // even on plain TLS a dedicated 1:1 proxied stream per app connection
+        // gives the fastest single-stream bandwidth with no head-of-line blocking.
+        out.put("mux", JSONObject().apply {
+            put("enabled", false)
+            put("concurrency", -1)
+        })
         return out
     }
 
@@ -212,26 +285,11 @@ object XrayConfigBuilder {
             })
         })
         out.put("streamSettings", buildStreamSettings(cfg))
-        applyMux(out, cfg)
+        out.put("mux", JSONObject().apply {
+            put("enabled", false)
+            put("concurrency", -1)
+        })
         return out
-    }
-
-    /**
-     * mux for ws/grpc/h2 only (never for Reality/XTLS-vision or raw tcp+tls,
-     * where 1:1 gives full line-rate). Only emit the block when enabled.
-     */
-    private fun applyMux(out: JSONObject, cfg: ServerConfig) {
-        val net = cfg.network.ifBlank { "tcp" }.lowercase()
-        val isReality = cfg.tls.equals("reality", true) || cfg.tls.equals("xtls", true)
-        val hasFlow = cfg.flow.isNotBlank()
-        val muxFriendly = net in setOf("ws", "grpc", "h2", "http")
-        val enable = muxFriendly && !isReality && !hasFlow
-        if (enable) {
-            out.put("mux", JSONObject().apply {
-                put("enabled", true)
-                put("concurrency", 8)
-            })
-        }
     }
 
     private fun buildStreamSettings(cfg: ServerConfig): JSONObject {
@@ -251,10 +309,10 @@ object XrayConfigBuilder {
 
         if (sec == "tls") {
             stream.put("tlsSettings", JSONObject().apply {
-                put("allowInsecure", true)
+                put("allowInsecure", true)   // public free nodes often use self-signed / fronted certs
                 val server = cfg.sni.ifBlank { cfg.host.ifBlank { cfg.address } }
                 if (server.isNotBlank()) put("serverName", server)
-                put("fingerprint", cfg.fingerprint.ifBlank { "chrome" })
+                put("fingerprint", cfg.fingerprint.ifBlank { "chrome" })  // uTLS browser mimicry
                 if (cfg.alpn.isNotBlank()) {
                     put("alpn", JSONArray().apply {
                         cfg.alpn.split(",").forEach { if (it.isNotBlank()) put(it.trim()) }
@@ -283,6 +341,8 @@ object XrayConfigBuilder {
             "grpc" -> stream.put("grpcSettings", JSONObject().apply {
                 put("serviceName", cfg.path)
                 put("multiMode", false)
+                put("idle_timeout", 60)
+                put("health_check_timeout", 20)
             })
             "h2", "http" -> stream.put("httpSettings", JSONObject().apply {
                 put("path", cfg.path.ifBlank { "/" })
@@ -322,12 +382,36 @@ object XrayConfigBuilder {
             }
         }
 
-        // Plain socket tuning ONLY. No mark, no fragment, no dialerProxy — the
-        // proxy dials the server directly. This is exactly what a minimal
-        // v2rayNG outbound does, and it is what actually carries traffic.
+        // Socket options + TLS-record FRAGMENTATION applied DIRECTLY on the proxy
+        // outbound (NOT via a dialerProxy chain — that was the v5.3 mistake that
+        // made ping lie and broke the live path). Splitting the ClientHello across
+        // tiny TCP segments means DPI never sees the SNI in one packet, so SNI /
+        // keyword blocking and RST-injection can't fingerprint and tear down the
+        // connection. This is what makes real traffic actually flow through the
+        // selected config on a filtered network. uTLS mimicry (above) + keep-alive
+        // keep the tunnel persistent and full-speed.
         stream.put("sockopt", JSONObject().apply {
+            put("tcpKeepAliveIdle", 30)
+            put("tcpKeepAliveInterval", 15)
             put("tcpNoDelay", true)
-            put("tcpKeepAliveIdle", 100)
+            put("tcpMptcp", false)
+            put("mark", 0)
+            if (sec == "tls" || sec == "reality") {
+                put("tcpFastOpen", true)
+                put("fragment", JSONObject().apply {
+                    put("packets", "tlshello")
+                    put("length", "100-200")
+                    put("interval", "10-20")
+                })
+            } else {
+                // for plaintext transports, fragment the first few packets so
+                // protocol-pattern DPI still can't lock on immediately.
+                put("fragment", JSONObject().apply {
+                    put("packets", "1-3")
+                    put("length", "100-200")
+                    put("interval", "10-20")
+                })
+            }
         })
 
         return stream
