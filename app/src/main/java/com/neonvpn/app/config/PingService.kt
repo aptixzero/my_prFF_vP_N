@@ -99,42 +99,62 @@ object PingService {
      */
     @Synchronized
     fun hydrate(ctx: Context, bucket: String) {
-        if (loadedBucket == bucket && _statuses.value.isNotEmpty()) return
+        // v5.6 — ALWAYS load the requested bucket. The old early-return skipped
+        // re-loading whenever the singleton had already loaded a DIFFERENT bucket
+        // (e.g. loaded "free", then user opens "my"), so persisted "my" pings were
+        // never restored → looked like a reset. We now merge every bucket's saved
+        // results into the shared content-keyed map. Live (in-memory) values win
+        // over disk so an in-flight sweep is never clobbered by stale disk data.
         loadedBucket = bucket
         val store = PingStore(ctx, bucket)
         val saved = store.load()
         if (saved.isEmpty()) return
         val unstable = store.loadUnstable()
-        val restored = saved.mapValues { (id, ms) ->
+        val restored = saved.mapValues { (key, ms) ->
             when {
                 ms <= 0L -> PingStatus.Unreachable
-                id in unstable -> PingStatus.Unstable(ms)
+                key in unstable -> PingStatus.Unstable(ms)
                 else -> PingStatus.Reachable(ms)
             }
         }
-        // Merge rather than replace so any live Testing/Reachable entries survive.
-        _statuses.value = restored + _statuses.value
+        // Merge: keep any live entry (Testing/fresh Reachable) over the disk copy,
+        // but bring in every saved key that isn't already present.
+        val merged = HashMap<String, PingStatus>(restored)
+        merged.putAll(_statuses.value)   // live values overwrite restored ones
+        _statuses.value = merged
     }
 
-    /** Latest known status for [id] (Idle if unknown). */
-    fun statusOf(id: String): PingStatus = _statuses.value[id] ?: PingStatus.Idle
+    /**
+     * v5.6 — the flow is keyed by CONTENT ([ConfigParser.pingKey]) not the
+     * ephemeral UUID, so a measured ping sticks to a config across restart / tab
+     * switch / re-parse. UI adapters look statuses up with [statusOfConfig].
+     */
+    fun keyOf(cfg: ServerConfig): String = ConfigParser.pingKey(cfg)
+
+    /** Latest known status for a raw content key (Idle if unknown). */
+    fun statusOf(key: String): PingStatus = _statuses.value[key] ?: PingStatus.Idle
+
+    /** Latest known status for a config, keyed by its stable content key. */
+    fun statusOfConfig(cfg: ServerConfig): PingStatus =
+        _statuses.value[keyOf(cfg)] ?: PingStatus.Idle
 
     /**
      * v4.0 — allow an external driver (the AutoTestEngine) to push a status into
      * the shared flow so the Free tab renders live spinners / results during an
-     * automatic test run, exactly as a manual PING ALL would.
+     * automatic test run, exactly as a manual PING ALL would. Keyed by content.
      */
-    fun setExternalStatus(id: String, status: PingStatus) = setStatus(id, status)
+    fun setExternalStatus(cfg: ServerConfig, status: PingStatus) = setStatus(keyOf(cfg), status)
 
     /**
      * Ping a SINGLE config immediately (the per-row PING button). Runs on the
      * app scope so a tab switch can't cancel it.
      */
     fun pingOne(ctx: Context, cfg: ServerConfig, bucket: String) {
+        val key = keyOf(cfg)
         appScope.launch {
-            setStatus(cfg.id, PingStatus.Testing)
+            setStatus(key, PingStatus.Testing)
             val ms = probeWithRetry(cfg)
-            applyResult(cfg.id, ms)
+            applyResult(key, ms)
             persist(ctx, bucket)
         }
     }
@@ -152,17 +172,26 @@ object PingService {
         if (running || sinceLast < BACKOFF_MS) return false
 
         sweepJob = appScope.launch {
-            // Mark everything as testing up front so the whole list shows spinners.
+            // Mark ONLY untested configs as testing up front so the whole list
+            // shows spinners for new rows — but DON'T clobber a config that
+            // already has a good ping (that would look like a "reset"). Existing
+            // results stay visible until a fresh measurement replaces them.
             val testing = _statuses.value.toMutableMap()
-            configs.forEach { testing[it.id] = PingStatus.Testing }
+            configs.forEach {
+                val k = keyOf(it)
+                val cur = testing[k]
+                if (cur == null || cur == PingStatus.Idle) testing[k] = PingStatus.Testing
+            }
             _statuses.value = testing
 
             withContext(Dispatchers.IO) {
                 configs.map { cfg ->
+                    val key = keyOf(cfg)
                     async {
                         gate.withPermit {
+                            setStatus(key, PingStatus.Testing)
                             val ms = probeWithRetry(cfg)
-                            applyResult(cfg.id, ms)
+                            applyResult(key, ms)
                         }
                     }
                 }.awaitAll()
@@ -196,12 +225,17 @@ object PingService {
      * alive (current free list + My Configs); everything else is dropped.
      */
     @Synchronized
-    fun prune(keepIds: Set<String>) {
+    fun prune(keepKeys: Set<String>) {
         val cur = _statuses.value
-        if (cur.size <= keepIds.size) return
-        val pruned = cur.filterKeys { it in keepIds }
+        // v5.6 — only prune when the map is clearly oversized vs. what we keep,
+        // and NEVER shrink below a healthy floor so a transient small keep-set
+        // (e.g. mid-reload) can't wipe results the user is still looking at.
+        if (cur.size <= keepKeys.size || cur.size < PRUNE_FLOOR) return
+        val pruned = cur.filterKeys { it in keepKeys }
         if (pruned.size != cur.size) _statuses.value = pruned
     }
+
+    private const val PRUNE_FLOOR = 400
 
     // ---- internals -------------------------------------------------------
 

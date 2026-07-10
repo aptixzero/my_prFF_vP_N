@@ -208,6 +208,9 @@ class ConnectFragment : Fragment() {
         synchronized(VpnStateBus.listeners) { VpnStateBus.listeners.add(listener) }
         synchronized(VpnStateBus.statsListeners) { VpnStateBus.statsListeners.add(statsListener) }
         RemoteConfigStore.addListener(remoteListener)
+        // v5.6 — guarantee the connect animation is running when we return to the
+        // foreground (fixes the "animation freezes after closing & reopening").
+        if (::globe.isInitialized) globe.resumeAnimation()
         VpnStateBus.reconcileWithService()
         render(VpnStateBus.state, VpnStateBus.info)
         renderStats(VpnStateBus.stats)

@@ -29,6 +29,10 @@ object AppPrefs {
     // v3.8 — opt-in "remember pasted configs" toggle (OFF by default).
     private const val KEY_PASTE_HISTORY = "paste_history_enabled"
 
+    // v5.6 — sticky "Auto Test is ON" flag. Persisted so that if the OS kills the
+    // process during a long screen-off session, Auto Test resumes on relaunch.
+    private const val KEY_AUTOTEST_ON = "autotest_on"
+
     private fun prefs(ctx: Context) =
         ctx.getSharedPreferences(FILE, Context.MODE_PRIVATE)
 
@@ -71,6 +75,15 @@ object AppPrefs {
 
     fun setPasteHistoryEnabled(ctx: Context, enabled: Boolean) {
         prefs(ctx).edit().putBoolean(KEY_PASTE_HISTORY, enabled).apply()
+    }
+
+    // ---------------------------------------------------------- auto test flag
+    /** Whether Auto Test was left ON (so it can auto-resume after a process kill). */
+    fun isAutoTestOn(ctx: Context): Boolean =
+        prefs(ctx).getBoolean(KEY_AUTOTEST_ON, false)
+
+    fun setAutoTestOn(ctx: Context, on: Boolean) {
+        prefs(ctx).edit().putBoolean(KEY_AUTOTEST_ON, on).apply()
     }
 
     // ---------------------------------------------------------------- locale

@@ -245,8 +245,29 @@ class ConfigsFragment : Fragment() {
     private fun pingAll() {
         if (adapter.items.isEmpty()) return
         val started = PingService.pingAll(requireContext(), adapter.items.toList(), PingStore.MY)
-        if (started) toast(getString(R.string.testing_ping))
+        if (started) {
+            toast(getString(R.string.testing_ping))
+            // v5.6 — sort ONCE, when the whole sweep finishes, rather than on
+            // every live tick (which used to fling the list around). We wait for
+            // the sweep to settle, then re-order fastest-first a single time.
+            viewLifecycleOwner.lifecycleScope.launch {
+                val keys = adapter.items.map { ConfigParser.pingKey(it) }
+                while (isResumedSafe()) {
+                    val map = PingService.statuses.value
+                    val anyTesting = keys.any { map[it] == PingStatus.Testing }
+                    val allSeen = keys.all { map[it] != null }
+                    if (!anyTesting && allSeen) break
+                    kotlinx.coroutines.delay(300)
+                }
+                if (::adapter.isInitialized && isAdded) {
+                    adapter.sortByPing()
+                    store.reorder(adapter.items.map { it.id })
+                }
+            }
+        }
     }
+
+    private fun isResumedSafe(): Boolean = isAdded && view != null
 
     override fun onHiddenChanged(hidden: Boolean) {
         super.onHiddenChanged(hidden)
@@ -299,26 +320,45 @@ class ServerAdapter(
         private set
 
     /**
-     * Re-render with the latest ping statuses and re-sort fastest-first via a
-     * DiffUtil pass (stable ids → only changed/moved rows animate). Selection
-     * order in select-mode is left untouched to avoid surprising the user.
+     * v5.6 — STABLE ORDER. Live ping status updates now refresh row content
+     * IN PLACE and NEVER re-sort/re-order the list. This fixes the long-standing
+     * complaint that pinging a config (or the auto-ping / auto-test churn) yanked
+     * the user's position around — "I ping the top item and it jumps to the
+     * bottom, or the scroll flies to the end every few seconds". The list order
+     * is now controlled ONLY by an explicit user action (Sort button /
+     * pingAll completion / list reload), not by every status tick.
      *
-     * v4.5 — CRASH-PROOF. The Auto-Test engine and the manual ping flow both
-     * push status maps onto the main thread, and the engine ALSO reloads the
-     * whole list (`items = fresh`) between batches. If a DiffUtil pass starts
-     * reading `oldItems` and then a second writer swaps `items` mid-flight, the
-     * RecyclerView's internal bookkeeping desyncs → the infamous
-     * "Inconsistency detected. Invalid view holder adapter position" crash that
-     * fired exactly when Auto-Test moved from list 1 → 2 → 3. We now:
-     *   • take an IMMUTABLE snapshot of the old list up-front,
-     *   • compute the new sorted list off that snapshot,
-     *   • swap `items` BEFORE dispatching the diff (so the adapter and the diff
-     *     agree on the new contents), and
-     *   • wrap the whole thing in runCatching + a full notifyDataSetChanged
-     *     fallback so even a genuinely racy state can never crash the process.
+     * The persisted ping value (Reachable/Unstable ms) is the single source of
+     * truth for the little coloured badge, so the badge survives tab switches,
+     * app restarts and screen off/on exactly as before — it just no longer moves
+     * the row.
+     *
+     * CRASH-PROOF: we update only the rows whose status actually changed via
+     * notifyItemChanged (stable ids), never a structural reorder, so the
+     * "Inconsistency detected" class of crashes cannot happen from a status tick.
      */
     fun applyStatuses(map: Map<String, PingStatus>) {
-        submitList(ArrayList(items), map)
+        val old = statuses
+        statuses = map
+        runCatching {
+            // Refresh only the rows whose status text/color actually changed.
+            // Keyed by CONTENT (pingKey) so a re-parsed copy of the same config
+            // still shows its persisted ping.
+            for (i in items.indices) {
+                val k = ConfigParser.pingKey(items[i])
+                if (old[k] != map[k]) notifyItemChanged(i)
+            }
+        }.onFailure {
+            runCatching { notifyDataSetChanged() }
+        }
+    }
+
+    /**
+     * Explicit, user-triggered re-sort (fastest-first). Called after a manual
+     * PING ALL finishes and on a full list reload — NOT on every live tick.
+     */
+    fun sortByPing() {
+        submitList(ArrayList(items), statuses)
     }
 
     /**
@@ -350,16 +390,19 @@ class ServerAdapter(
         runCatching {
             // Old list == what the RecyclerView is displaying RIGHT NOW.
             val oldItems: List<ServerConfig> = ArrayList(items)
-            val sorted = newItems.sortedBy { PingService.sortKey(map[it.id] ?: PingStatus.Idle) }
+            val sorted = newItems.sortedBy {
+                PingService.sortKey(map[ConfigParser.pingKey(it)] ?: PingStatus.Idle)
+            }
             val diff = androidx.recyclerview.widget.DiffUtil.calculateDiff(
                 object : androidx.recyclerview.widget.DiffUtil.Callback() {
                     override fun getOldListSize() = oldItems.size
                     override fun getNewListSize() = sorted.size
                     override fun areItemsTheSame(o: Int, n: Int) = oldItems[o].id == sorted[n].id
                     override fun areContentsTheSame(o: Int, n: Int): Boolean {
-                        val id = sorted[n].id
+                        if (oldItems[o].id != sorted[n].id) return false
+                        val k = ConfigParser.pingKey(sorted[n])
                         // Same row only "unchanged" if its status didn't change.
-                        return oldItems[o].id == id && old[id] == map[id]
+                        return old[k] == map[k]
                     }
                 }
             )
@@ -368,8 +411,9 @@ class ServerAdapter(
         }.onFailure {
             // Last-ditch: drop animations, just resync the whole list. Never throw.
             runCatching {
-                items = newItems.sortedBy { PingService.sortKey(map[it.id] ?: PingStatus.Idle) }
-                    .toMutableList()
+                items = newItems.sortedBy {
+                    PingService.sortKey(map[ConfigParser.pingKey(it)] ?: PingStatus.Idle)
+                }.toMutableList()
                 notifyDataSetChanged()
             }
         }
@@ -406,7 +450,7 @@ class ServerAdapter(
         holder.badge.text = cfg.protocol.uppercase()
 
         // ping result text (never reveal host/IP to protect the config)
-        val status = statuses[cfg.id] ?: PingStatus.Idle
+        val status = statuses[ConfigParser.pingKey(cfg)] ?: PingStatus.Idle
         holder.detail.text = when (status) {
             PingStatus.Idle -> "tap PING to test"
             PingStatus.Testing -> "testing…"

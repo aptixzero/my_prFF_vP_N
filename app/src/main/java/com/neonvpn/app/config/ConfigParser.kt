@@ -211,6 +211,17 @@ object ConfigParser {
         "${c.protocol}|${c.address.lowercase()}|${c.port}|${c.userId}|${c.network}|${c.path}|${c.host}|${c.tls}"
 
     /**
+     * v5.6 — STABLE ping key. Ping/latency results are stored against the config's
+     * CONTENT (not its ephemeral UUID `id`, which is regenerated every time the
+     * same link is re-parsed). Keying pings by content means the last measured
+     * ping "sticks" to a config forever: it survives app restart, tab switch,
+     * screen off/on, an Auto-Test batch replacing the free list with freshly-parsed
+     * copies, and the same config appearing in BOTH Free and My Configs. This is
+     * the definitive fix for "the pings I measured keep disappearing / resetting".
+     */
+    fun pingKey(c: ServerConfig): String = dedupKey(c)
+
+    /**
      * "Location" key used to cap how many configs share the same server endpoint.
      * Many public lists publish 10-20 near-identical configs that all point at
      * the SAME IP / SNI host (same physical location), differing only by remark

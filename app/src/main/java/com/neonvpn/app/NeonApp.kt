@@ -32,6 +32,17 @@ class NeonApp : Application() {
         // token + aggregate counts — never an IP, device id, account, or location.
         // Fully best-effort: runs off the main thread and never blocks/crashes UI.
         try { UserStatsReporter.start(this) } catch (_: Throwable) {}
+
+        // v5.6 — LIFECYCLE HANDLER: if Auto Test was left ON but the OS killed the
+        // process (e.g. during a long screen-off run), transparently resume it on
+        // relaunch so the user never silently drops out of auto-test mode.
+        try {
+            if (com.neonvpn.app.util.AppPrefs.isAutoTestOn(this) &&
+                !com.neonvpn.app.config.AutoTestEngine.isRunning
+            ) {
+                com.neonvpn.app.config.AutoTestEngine.start(this)
+            }
+        } catch (_: Throwable) {}
     }
 
     /**
@@ -45,8 +56,12 @@ class NeonApp : Application() {
         super.onTrimMemory(level)
         try {
             if (level >= TRIM_MEMORY_RUNNING_LOW) {
-                // Drop cached ping states we don't strictly need in RAM and hint a GC.
-                runCatching { com.neonvpn.app.config.PingService.prune(emptySet()) }
+                // v5.6 — do NOT wipe the ping map here. The old prune(emptySet())
+                // cleared the user's measured pings on any memory pressure tick
+                // (which fires routinely during a long screen-off Auto-Test run),
+                // so "my pings disappeared after a few minutes" was really the OS
+                // asking us to trim. The ping map is tiny; only hint a GC. Results
+                // are also persisted to disk, so nothing is ever lost.
                 runCatching { System.gc() }
             }
         } catch (_: Throwable) {}
@@ -55,7 +70,9 @@ class NeonApp : Application() {
     override fun onLowMemory() {
         super.onLowMemory()
         try {
-            runCatching { com.neonvpn.app.config.PingService.prune(emptySet()) }
+            // Only under TRUE low-memory do we shed, and even then the persisted
+            // PingStore restores the results on the next hydrate (content-keyed),
+            // so the badges reappear rather than being permanently reset.
             runCatching { System.gc() }
         } catch (_: Throwable) {}
     }

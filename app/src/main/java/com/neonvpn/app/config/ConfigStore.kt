@@ -118,6 +118,26 @@ class ConfigStore(context: Context) {
         return before - current.size
     }
 
+    /**
+     * v5.6 — persist an explicit display order (list of ids, fastest-first after
+     * a manual PING ALL). Only reorders the EXISTING configs; unknown ids are
+     * ignored and any config missing from [orderedIds] is appended in its current
+     * order so nothing is ever lost.
+     */
+    fun reorder(orderedIds: List<String>) = synchronized(LOCK) {
+        val current = getServersLocked()
+        if (current.isEmpty()) return
+        val byId = current.associateBy { it.id }
+        val result = ArrayList<ServerConfig>(current.size)
+        val used = HashSet<String>()
+        for (id in orderedIds) {
+            val c = byId[id] ?: continue
+            if (used.add(id)) result.add(c)
+        }
+        for (c in current) if (c.id !in used) result.add(c)
+        saveServersLocked(result)
+    }
+
     fun getSelectedId(): String? = prefs.getString(KEY_SELECTED, null)
 
     fun setSelectedId(id: String?) {

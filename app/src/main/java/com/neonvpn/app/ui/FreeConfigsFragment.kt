@@ -142,13 +142,51 @@ class FreeConfigsFragment : Fragment() {
         viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
             try { FreeConfigSource.ensureFreshState(requireContext()) } catch (_: Throwable) {}
         }
+
+        // v5.6 — AUTO PING. The Free tab now automatically pings any configs that
+        // have never been tested (or lost their result) whenever it becomes
+        // visible, and keeps a light periodic re-test running so the coloured
+        // pings stay fresh WITHOUT the user having to press "PING ALL". This runs
+        // on the app-scoped PingService, so switching tabs / backgrounding does
+        // not cancel an in-flight sweep, and the results persist.
+        startAutoPingLoop()
+    }
+
+    /** Background driver that keeps free configs auto-pinged (v5.6). */
+    private var autoPingJob: Job? = null
+
+    private fun startAutoPingLoop() {
+        autoPingJob?.cancel()
+        autoPingJob = viewLifecycleOwner.lifecycleScope.launch {
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                while (isActive) {
+                    // Do NOT fight the manual/auto-test flows.
+                    if (!busy && !AutoTestEngine.isRunning && adapter.items.isNotEmpty()) {
+                        val map = PingService.statuses.value
+                        val untested = adapter.items.any {
+                            val s = map[ConfigParser.pingKey(it)]
+                            s == null || s == PingService.PingStatus.Idle
+                        }
+                        if (untested) {
+                            PingService.pingAll(
+                                requireContext(), adapter.items.toList(), PingStore.FREE
+                            )
+                        }
+                    }
+                    kotlinx.coroutines.delay(6_000)
+                }
+            }
+        }
     }
 
     override fun onDestroyView() {
         super.onDestroyView()
         job?.cancel()
+        autoPingJob?.cancel()
         // NOTE: do NOT stop AutoTestEngine here — it is app-scoped and must keep
         // running across tab switches until the user explicitly cancels it.
+        // The PingService sweep is ALSO app-scoped, so an in-flight auto-ping
+        // survives this view being destroyed (the results still persist).
     }
 
     /** Render live ping statuses from the app-scoped PingService (§4.4). */
@@ -277,6 +315,11 @@ class FreeConfigsFragment : Fragment() {
                 adapter.submitList(merged, PingService.statuses.value)
                 refreshEmpty()
                 updateListHeader()
+                // v5.6 — auto-ping the freshly-added configs right away so the
+                // user sees live colour-coded pings without pressing PING ALL.
+                if (!AutoTestEngine.isRunning) {
+                    PingService.pingAll(requireContext(), merged, PingStore.FREE)
+                }
             }
 
             showProgress(
@@ -332,15 +375,18 @@ class FreeConfigsFragment : Fragment() {
             while (isActive && isAdded) {
                 val map = PingService.statuses.value
                 val done = adapter.items.count {
-                    val s = map[it.id]
+                    val s = map[ConfigParser.pingKey(it)]
                     s != null && s != PingService.PingStatus.Testing
                 }
                 showProgress(done * 100 / total.coerceAtLeast(1), "Tested ${done.coerceAtMost(total)}/$total")
-                val anyTesting = adapter.items.any { map[it.id] == PingService.PingStatus.Testing }
+                val anyTesting = adapter.items.any {
+                    map[ConfigParser.pingKey(it)] == PingService.PingStatus.Testing
+                }
                 if (!anyTesting && done >= total) break
                 kotlinx.coroutines.delay(250)
             }
-            persistCurrentOrder()
+            // v5.6 — sort ONCE at the end of a manual sweep (not on every tick).
+            if (isAdded) { adapter.sortByPing(); persistCurrentOrder() }
             setBusy(false)
             hideProgressDelayed()
         }

@@ -148,6 +148,9 @@ object AutoTestEngine {
     fun start(ctx: Context) {
         if (isRunning) return
         val appCtx = ctx.applicationContext
+        // v5.6 — remember Auto Test is ON so it survives a process kill (long
+        // screen-off session). NeonApp re-arms it on next launch if still set.
+        runCatching { com.neonvpn.app.util.AppPrefs.setAutoTestOn(appCtx, true) }
         val freeStore = FreeConfigStore(appCtx)
         val myStore = ConfigStore(appCtx)
 
@@ -233,8 +236,8 @@ object AutoTestEngine {
                 // statuses map cannot grow forever across cycles.
                 runCatching {
                     val keep = HashSet<String>(fresh.size + 64)
-                    fresh.forEach { keep.add(it.id) }
-                    myStore.getServers().forEach { keep.add(it.id) }
+                    fresh.forEach { keep.add(PingService.keyOf(it)) }
+                    myStore.getServers().forEach { keep.add(PingService.keyOf(it)) }
                     PingService.prune(keep)
                 }
 
@@ -256,11 +259,11 @@ object AutoTestEngine {
                             runCatching {
                                 gate.withPermit {
                                     if (!isActive) return@withPermit
-                                    PingService.setExternalStatus(cfg.id, PingService.PingStatus.Testing)
+                                    PingService.setExternalStatus(cfg, PingService.PingStatus.Testing)
                                     val ms = probeWithRetry(cfg)
                                     if (ms in 1..WORKING_MAX_MS) {
                                         PingService.setExternalStatus(
-                                            cfg.id, PingService.PingStatus.Reachable(ms)
+                                            cfg, PingService.PingStatus.Reachable(ms)
                                         )
                                         // v4.2 — INSTANT add: the moment a config
                                         // pings, push it straight into My Configs.
@@ -281,7 +284,7 @@ object AutoTestEngine {
                                         }
                                     } else {
                                         PingService.setExternalStatus(
-                                            cfg.id, PingService.PingStatus.Unreachable
+                                            cfg, PingService.PingStatus.Unreachable
                                         )
                                     }
                                 }
@@ -312,7 +315,7 @@ object AutoTestEngine {
                 runCatching {
                     storeMutex.withLock {
                         val reachable = freeStore.get().filter {
-                            PingService.statusOf(it.id) is PingService.PingStatus.Reachable
+                            PingService.statusOfConfig(it) is PingService.PingStatus.Reachable
                         }
                         freeStore.replaceAll(reachable)
                     }
@@ -338,7 +341,12 @@ object AutoTestEngine {
         updateProgress { it.copy(running = false, phase = "Stopped") }
         // v4.2 — drop the "Auto Test is ON" banner the moment the user cancels.
         runCatching {
-            com.neonvpn.app.NeonApp.instance.let { AutoTestNotifier.clear(it) }
+            com.neonvpn.app.NeonApp.instance.let {
+                AutoTestNotifier.clear(it)
+                // v5.6 — user explicitly cancelled: clear the sticky flag so it
+                // does NOT auto-resume on next launch.
+                com.neonvpn.app.util.AppPrefs.setAutoTestOn(it, false)
+            }
         }
     }
 

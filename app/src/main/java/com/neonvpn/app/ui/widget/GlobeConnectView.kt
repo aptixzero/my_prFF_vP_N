@@ -60,8 +60,38 @@ class GlobeConnectView @JvmOverloads constructor(
     fun setState(s: State) {
         if (state == s) return
         state = s
+        // Ensure the render loop is alive whenever the state changes — if the
+        // view was detached/re-attached (app closed & reopened, tab switch,
+        // screen off/on) the ValueAnimator may have been cancelled, which froze
+        // the connect animation. Re-arm it defensively so the orb never sticks.
+        ensureLoopRunning()
         invalidate()
     }
+
+    /**
+     * Restart the render loop when the view is (re)attached to the window. The
+     * old code only started it in init{} and cancelled it on detach, so after
+     * the app was backgrounded/reopened the animation stayed frozen. Restarting
+     * on attach guarantees a smooth, always-live connect animation.
+     */
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        ensureLoopRunning()
+    }
+
+    /** Start the loop only if it isn't already running (idempotent). */
+    private fun ensureLoopRunning() {
+        if (anim?.isRunning == true) return
+        startLoop()
+    }
+
+    /**
+     * Public re-arm hook. The Connect screen calls this from onResume so the
+     * animation is guaranteed to be live after the app returns to the foreground,
+     * even in the case where the view was never fully detached (so
+     * onAttachedToWindow didn't fire) but the animator was paused by the system.
+     */
+    fun resumeAnimation() = ensureLoopRunning()
 
     private fun startLoop() {
         anim?.cancel()
