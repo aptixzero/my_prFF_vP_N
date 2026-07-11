@@ -200,7 +200,7 @@ object AutoTestEngine {
                         testedInBatch = 0, batchSize = 0)
                 }
 
-                val batch = runCatching {
+                var batch = runCatching {
                     FreeConfigSource.nextBatch(
                         ctx = appCtx,
                         startIndex = 0,
@@ -210,9 +210,38 @@ object AutoTestEngine {
 
                 if (!isActive) break
 
-                val fresh = batch?.configs ?: emptyList()
+                var fresh = batch?.configs ?: emptyList()
+
+                // v5.9 — THE "second/third Auto Test adds nothing" FIX.
+                //
+                // When the source cursor has already served every currently-live
+                // config, the dedup memory (seenKeys) swallows the whole press and
+                // `fresh` comes back empty EVEN THOUGH the feeds are perfectly
+                // reachable. The old code just waited 4s and retried forever, so
+                // the list stayed empty. We now detect that case (reachedSource ==
+                // true but fresh empty == "all duplicates, not offline") and RESET
+                // the dedup memory so the very next press re-serves the live
+                // configs. This makes Auto Test work an unlimited number of times.
+                if (fresh.isEmpty() && batch?.reachedSource == true) {
+                    runCatching {
+                        seenKeys.clear()
+                        SeenConfigStore.performReset(appCtx)
+                        // keep only what the user actually holds so we don't
+                        // immediately re-add configs already in My Configs
+                        myStore.getServers().forEach { seenKeys.add(ConfigParser.dedupKey(it)) }
+                    }
+                    batch = runCatching {
+                        FreeConfigSource.nextBatch(
+                            ctx = appCtx,
+                            startIndex = 0,
+                            seenKeys = seenKeys
+                        ) { _, _, _ -> }
+                    }.getOrNull()
+                    fresh = batch?.configs ?: emptyList()
+                }
+
                 if (fresh.isEmpty()) {
-                    // Feed temporarily unreachable — wait and retry the cycle.
+                    // Genuinely nothing (feeds unreachable) — wait and retry.
                     updateProgress { it.copy(phase = "Feed unreachable — retrying…") }
                     delay(4_000)
                     continue

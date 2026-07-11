@@ -11,6 +11,7 @@ import com.neonvpn.app.config.AutoTestEngine
 import com.neonvpn.app.config.ConfigParser
 import com.neonvpn.app.config.ConfigStore
 import com.neonvpn.app.config.ConnectivityProbe
+import com.neonvpn.app.config.SeenConfigStore
 import com.neonvpn.app.config.ServerConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -18,14 +19,20 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * v4.6 — AUTO TEST connectivity page.
+ * v5.9 — AUTO TEST connectivity page.
  *
- * A deliberately minimal screen: a title + a progress bar (no per-source text).
- * On open it runs the fast [ConnectivityProbe] which scans the 50 live sources a
- * few at a time and STOPS at the FIRST reachable vless + vmess pair. Those are
- * saved into My Configs (auto-selected), the page closes, and the continuous
- * [AutoTestEngine] is started to keep filling My Configs 240-at-a-time in the
- * background.
+ * A deliberately minimal screen: a title + a progress bar. On open it runs the
+ * [ConnectivityProbe] which walks the live sources and pulls a FULL fresh batch
+ * of configs. The progress bar reflects the REAL work of reaching each source —
+ * it fills as configs are actually collected, NOT on a random timer.
+ *
+ * When the bar reaches 100% the collected configs are added to My Configs the
+ * SAME instant (the wait the user spends watching the bar IS the time we spend
+ * finding real configs), the page closes, and the continuous [AutoTestEngine]
+ * is started to keep filling My Configs 240-at-a-time in the background.
+ *
+ * There is NO false "connection error": we only show it when NOT ONE source
+ * could be opened (a genuine offline state).
  *
  * Every step is guarded so the page can never crash the app.
  */
@@ -53,8 +60,21 @@ class AutoTestActivity : BaseActivity() {
 
     private fun startProbe() {
         probeJob = lifecycleScope.launch {
+            // Shared dedup memory (persistent seen-set + everything already in My
+            // Configs) so the probe never hands back a config the user already
+            // has. The probe mutates this and we persist it once the batch lands.
+            val seenKeys = withContext(Dispatchers.IO) {
+                val s = HashSet<String>()
+                runCatching { s.addAll(SeenConfigStore.load(applicationContext)) }
+                runCatching {
+                    ConfigStore(applicationContext).getServers()
+                        .forEach { s.add(ConfigParser.dedupKey(it)) }
+                }
+                s
+            }
+
             val result = try {
-                ConnectivityProbe.probe(applicationContext) { p ->
+                ConnectivityProbe.probe(applicationContext, seenKeys) { p ->
                     runOnUiThread {
                         if (!isFinishing) {
                             animateBarTo(p)
@@ -63,20 +83,18 @@ class AutoTestActivity : BaseActivity() {
                     }
                 }
             } catch (_: Throwable) {
-                ConnectivityProbe.Result(null, null, reachedSource = false)
+                ConnectivityProbe.Result(emptyList(), reachedSource = false)
             }
 
-            // v5.8 — the connectivity scan line has FULLY finished. We now add the
-            // configs whenever the source FEEDS were reachable — we do NOT require
-            // a live ping to have completed (on Iran's weak links a real proxied
-            // ping often can't finish inside the budget, but reaching the feed and
-            // pulling a valid vless/vmess is itself proof the user is online). The
-            // user pings later, manually, from My Configs.
+            // v5.9 — the progress bar has reached 100% (real source work done).
+            // Add the collected configs to My Configs RIGHT NOW so they are
+            // guaranteed present the moment the page closes. Configs are added
+            // whenever a source was reachable — no live ping is required (on
+            // Iran's weak links a proxied ping often can't finish inside the
+            // budget, but reaching a feed and pulling valid vless/vmess is itself
+            // proof the user is online). The user pings later from My Configs.
             if (result.ok) {
-                // Save the fetched (and where possible ping-confirmed) vless+vmess
-                // straight into My Configs. The write COMPLETES before we leave the
-                // page so the configs are guaranteed present on My Configs.
-                val addedCount = runCatching { saveResult(result) }.getOrDefault(0)
+                val addedCount = runCatching { saveResult(result.configs, seenKeys) }.getOrDefault(0)
 
                 // Kick off the continuous engine to keep filling My Configs with
                 // more working configs in the background.
@@ -87,11 +105,11 @@ class AutoTestActivity : BaseActivity() {
                 }
                 finishSafely()
             } else {
-                // Nothing could be fetched from ANY of the 50 feeds — the user
-                // genuinely has no path to the sources right now. Show the error,
-                // but STILL start the background engine so that the moment the
-                // (unstable Iranian) connection recovers, configs start arriving
-                // without the user having to tap Auto Test again.
+                // Nothing could be fetched from ANY source — the user genuinely
+                // has no path to the sources right now. Show the error, but STILL
+                // start the background engine so that the moment the (unstable
+                // Iranian) connection recovers, configs start arriving without the
+                // user having to tap Auto Test again.
                 runCatching { AutoTestEngine.start(applicationContext) }
                 runOnUiThread {
                     if (!isFinishing) {
@@ -112,39 +130,47 @@ class AutoTestActivity : BaseActivity() {
         }
     }
 
-    /** @return how many configs were actually added to My Configs. */
-    private suspend fun saveResult(result: ConnectivityProbe.Result): Int = withContext(Dispatchers.IO) {
+    /**
+     * v5.9 — add the freshly-probed batch to My Configs.
+     *
+     * Per the brief, a fresh Auto Test REPLACES the previous list with 240 new
+     * configs: we WIPE the old My-Configs list and store the new batch. Configs
+     * are numbered sequentially "Server N" (baked into the link's #remark so it
+     * survives being copied into another client), and the first one is selected.
+     *
+     * @return how many configs were actually added to My Configs.
+     */
+    private suspend fun saveResult(
+        configs: List<ServerConfig>,
+        seenKeys: MutableSet<String>
+    ): Int = withContext(Dispatchers.IO) {
+        if (configs.isEmpty()) return@withContext 0
         val store = ConfigStore(applicationContext)
-        val toAdd = ArrayList<ServerConfig>(2)
-        // Number them generically continuing from the current list size; give
-        // neutral Server labels. v5.1 — bake the name into the link's #remark so
-        // it stays "Server N" when copied into any other v2ray client.
-        var n = store.getServers().size
-        result.vless?.let {
+
+        // WIPE the previous list — a fresh Auto Test gives a brand-new 240 batch.
+        runCatching { store.saveServers(emptyList()) }
+
+        // Number them "Server 1..N" and bake the name into the raw link's remark.
+        val named = ArrayList<ServerConfig>(configs.size)
+        var n = 0
+        for (cfg in configs) {
             n++
             val name = "Server $n"
-            toAdd.add(it.copy(
-                remark = name,
-                rawLink = ConfigParser.rewriteRemark(it.rawLink, name)
-            ))
+            named.add(
+                cfg.copy(
+                    remark = name,
+                    rawLink = ConfigParser.rewriteRemark(cfg.rawLink, name)
+                )
+            )
         }
-        result.vmess?.let {
-            n++
-            val name = "Server $n"
-            toAdd.add(it.copy(
-                remark = name,
-                rawLink = ConfigParser.rewriteRemark(it.rawLink, name)
-            ))
+
+        val added = store.addServers(named)
+        if (store.getSelectedId() == null) {
+            store.getServers().firstOrNull()?.let { store.setSelectedId(it.id) }
         }
-        if (toAdd.isNotEmpty()) {
-            val added = store.addServers(toAdd)
-            if (store.getSelectedId() == null) {
-                store.getServers().firstOrNull()?.let { store.setSelectedId(it.id) }
-            }
-            added
-        } else {
-            0
-        }
+        // Persist the dedup memory so the NEXT batch prefers fresh configs.
+        runCatching { SeenConfigStore.save(applicationContext, seenKeys) }
+        added
     }
 
     /**

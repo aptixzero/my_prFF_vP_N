@@ -17,6 +17,7 @@ import androidx.recyclerview.widget.RecyclerView
 import com.neonvpn.app.R
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.repeatOnLifecycle
+import com.neonvpn.app.config.AutoTestEngine
 import com.neonvpn.app.config.ConfigParser
 import com.neonvpn.app.config.ConfigStore
 import com.neonvpn.app.config.PasteHistoryStore
@@ -41,6 +42,9 @@ class ConfigsFragment : Fragment() {
     private lateinit var btnCopySel: TextView
     private lateinit var btnDeleteSel: TextView
     private lateinit var btnPingAll: TextView
+
+    /** v5.9 — true while a manual PING ALL sweep is running (pins healthy top). */
+    @Volatile private var pingAllInFlight = false
 
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
@@ -71,6 +75,10 @@ class ConfigsFragment : Fragment() {
         // its single StateFlow so results stay live across tab switches.
         PingService.hydrate(requireContext(), PingStore.MY)
         observePingStatuses()
+        // v5.9 — reflect the continuous Auto-Test engine LIVE in My Configs so the
+        // user watches working configs accumulate here (throttled), while staying
+        // pinned to the top where the healthy servers are.
+        observeAutoTest()
 
         view.findViewById<View>(R.id.btn_paste).setOnClickListener { pasteFromClipboard() }
         btnSelectMode.setOnClickListener { toggleSelectMode() }
@@ -91,10 +99,61 @@ class ConfigsFragment : Fragment() {
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 PingService.statuses.collect { map ->
-                    adapter.applyStatuses(map)
+                    // v5.9 — while a manual PING ALL is in flight, keep the healthy
+                    // configs pinned to the TOP the INSTANT each ping lands (not
+                    // only once at the end) and keep the user parked at the top so
+                    // they always watch the configs that ping — never dragged down
+                    // to the dead ones. Status ticks that don't reorder still just
+                    // refresh row content in place (no jump).
+                    if (pingAllInFlight && isAtTop()) {
+                        adapter.submitList(store.getServers(), map)
+                        scrollToTop()
+                    } else {
+                        adapter.applyStatuses(map)
+                    }
                 }
             }
         }
+    }
+
+    /** Last time we reloaded My Configs from the store during Auto Test. */
+    @Volatile private var lastAutoReloadAt = 0L
+
+    /**
+     * v5.9 — mirror the continuous Auto-Test engine into My Configs LIVE. The
+     * engine flushes newly-working configs into the store; we reload them here
+     * (throttled) so the user sees them appear, keep the healthy ones pinned to
+     * the top, and keep the user parked at the top.
+     */
+    private fun observeAutoTest() {
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                AutoTestEngine.progress.collect { p ->
+                    if (!isAdded || !p.running) return@collect
+                    val now = System.currentTimeMillis()
+                    if (now - lastAutoReloadAt < 700L) return@collect
+                    lastAutoReloadAt = now
+                    val atTop = isAtTop()
+                    runCatching {
+                        adapter.selectedId = store.getSelectedId()
+                        adapter.submitList(store.getServers(), PingService.statuses.value)
+                        emptyView.visibility = if (adapter.items.isEmpty()) View.VISIBLE else View.GONE
+                    }
+                    // Keep the user at the top (where the healthy configs are) as
+                    // the engine appends new ones, so they never get flung to the
+                    // bottom while more configs are being added.
+                    if (atTop) scrollToTop()
+                }
+            }
+        }
+    }
+
+    /** True if the list is scrolled to (or very near) the top. */
+    private fun isAtTop(): Boolean {
+        val rv = view?.findViewById<RecyclerView>(R.id.recycler) ?: return true
+        val lm = rv.layoutManager as? LinearLayoutManager ?: return true
+        val first = lm.findFirstVisibleItemPosition()
+        return first <= 1
     }
 
     // -------------------------------------------------------- paste / select
@@ -247,9 +306,12 @@ class ConfigsFragment : Fragment() {
         val started = PingService.pingAll(requireContext(), adapter.items.toList(), PingStore.MY)
         if (started) {
             toast(getString(R.string.testing_ping))
-            // v5.6 — sort ONCE, when the whole sweep finishes, rather than on
-            // every live tick (which used to fling the list around). We wait for
-            // the sweep to settle, then re-order fastest-first a single time.
+            // v5.9 — pin the healthy configs to the top the INSTANT each ping
+            // lands (see observePingStatuses), keeping the user parked at the top.
+            pingAllInFlight = true
+            // Snap to top immediately so the user starts watching the configs that
+            // will pin as they succeed.
+            scrollToTop()
             viewLifecycleOwner.lifecycleScope.launch {
                 val keys = adapter.items.map { ConfigParser.pingKey(it) }
                 while (isResumedSafe()) {
@@ -259,12 +321,13 @@ class ConfigsFragment : Fragment() {
                     if (!anyTesting && allSeen) break
                     kotlinx.coroutines.delay(300)
                 }
+                pingAllInFlight = false
                 if (::adapter.isInitialized && isAdded) {
+                    // Final authoritative sort: healthy (lowest ping) at the top,
+                    // dead / non-pinging at the bottom, and persist that order.
                     adapter.sortByPing()
                     store.reorder(adapter.items.map { it.id })
-                    // v5.7 — after pinning the healthy configs to the top, snap the
-                    // view back to the top so the user stays with the working
-                    // servers instead of being carried down to the dead ones.
+                    // Keep the user with the working servers at the top.
                     scrollToTop()
                 }
             }

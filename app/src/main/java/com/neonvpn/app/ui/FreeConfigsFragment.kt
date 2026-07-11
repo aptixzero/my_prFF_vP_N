@@ -159,12 +159,24 @@ class FreeConfigsFragment : Fragment() {
         // survives this view being destroyed (the results still persist).
     }
 
+    /** v5.9 — true while a manual PING ALL sweep is running on the Free tab. */
+    @Volatile private var pingAllInFlight = false
+
     /** Render live ping statuses from the app-scoped PingService (§4.4). */
     private fun observePingStatuses() {
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 PingService.statuses.collect { map ->
-                    adapter.applyStatuses(map)
+                    // v5.9 — during a manual PING ALL sweep, pin the healthy
+                    // configs to the top the INSTANT each ping lands and keep the
+                    // user parked at the top so they always watch the configs that
+                    // respond — never dragged to the dead ones at the bottom.
+                    if (pingAllInFlight && !AutoTestEngine.isRunning && isAtTop()) {
+                        adapter.submitList(ArrayList(adapter.items), map)
+                        scrollToTop()
+                    } else {
+                        adapter.applyStatuses(map)
+                    }
                     // Persist the (re-sorted) order — but NOT while Auto Test is
                     // running, because the engine owns the free store then and a
                     // double-writer races (this was a crash source). Snapshot the
@@ -237,11 +249,24 @@ class FreeConfigsFragment : Fragment() {
             val fresh = freeStore.get()
             seenKeys.clear()
             fresh.forEach { seenKeys.add(ConfigParser.dedupKey(it)) }
+            // v5.9 — remember whether the user is parked at the top BEFORE the
+            // swap so we can keep them there. The healthy (pinging) configs are
+            // pinned to the top, so keeping the user at the top means they always
+            // watch the configs that respond, never dragged to the dead ones.
+            val atTop = isAtTop()
             // Atomic, crash-proof swap + diff in ONE pass.
             adapter.submitList(fresh, PingService.statuses.value)
             refreshEmpty()
             updateListHeader()
+            if (atTop) scrollToTop()
         }
+    }
+
+    /** True if the list is scrolled to (or very near) the top. */
+    private fun isAtTop(): Boolean {
+        val rv = view?.findViewById<RecyclerView>(R.id.recycler) ?: return true
+        val lm = rv.layoutManager as? LinearLayoutManager ?: return true
+        return lm.findFirstVisibleItemPosition() <= 1
     }
 
     // --------------------------------------------------------------- search
@@ -336,6 +361,9 @@ class FreeConfigsFragment : Fragment() {
         if (!started) { toast(getString(R.string.testing_ping)); return }
 
         setBusy(true)
+        // v5.9 — pin healthy configs to the top live and keep the user at the top.
+        pingAllInFlight = true
+        scrollToTop()
         val total = adapter.items.size
         showProgress(0, getString(R.string.testing_ping))
         job = viewLifecycleOwner.lifecycleScope.launch {
@@ -356,6 +384,7 @@ class FreeConfigsFragment : Fragment() {
             // pinning the pinging configs to the TOP, then SNAP the view back to
             // the top so the user stays exactly where the healthy servers are —
             // never dragged down to the dead ones at the bottom.
+            pingAllInFlight = false
             if (isAdded) {
                 adapter.sortByPing()
                 persistCurrentOrder()

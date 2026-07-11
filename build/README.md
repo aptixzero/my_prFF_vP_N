@@ -4,7 +4,7 @@ The signed **universal** release APK for Professor VPN is produced by the
 GitHub Actions workflow `.github/workflows/build.yml` on every push to
 `main` / `genspark_ai_developer`, and on manual dispatch.
 
-- Output name: `ProfessorVPN-v<versionName>-universal.apk` (current: `ProfessorVPN-v5.8-universal.apk`)
+- Output name: `ProfessorVPN-v<versionName>-universal.apk` (current: `ProfessorVPN-v5.9-universal.apk`)
 - Download it from the workflow run's **Artifacts**, or from the
   **Releases** page (published on `workflow_dispatch` / tag).
 

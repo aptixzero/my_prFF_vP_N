@@ -3,35 +3,34 @@ package com.neonvpn.app.config
 import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.coroutineContext
 
 /**
- * v4.6 — FAST "Auto Test" connectivity probe.
+ * v5.9 — REAL "Auto Test" connectivity probe (honest progress, no fake error).
  *
  * When the user taps AUTO TEST a small page opens with just a progress bar. That
- * page runs THIS probe, which answers one question quickly:
+ * page runs THIS probe, which does ONE real thing:
  *
- *   "Which of the 50 live sources can this user actually reach right now, and can
- *    we find a WORKING vless + a WORKING vmess through them?"
+ *   "Walk the live sources, open them one by one, and pull a FULL fresh batch of
+ *    working-shaped vless/vmess configs. The progress bar reflects the REAL work
+ *    of reaching each source — it advances only as a source is actually opened
+ *    and yields configs. The moment we have collected the batch (or exhausted the
+ *    sources) the bar completes and the collected configs are returned so the
+ *    page can add them the SAME instant."
  *
- * Behaviour (per the v4.6 brief):
- *   • It scans the [LiveSources] a few at a time (bounded concurrency) rather than
- *     all 50 at once, so it's fast and light.
- *   • As soon as it finds ONE reachable VLESS and ONE reachable VMESS config
- *     (confirmed by the same censored-endpoint [Pinger] the real connect uses),
- *     it STOPS immediately and returns them — the page closes and the engine uses
- *     them. It does NOT keep scanning the rest.
- *   • It is hard time-boxed ([BUDGET_MS]) so it can never hang the page.
+ * Design goals for v5.9 (fixes the reported bugs):
+ *   • The bar is driven by ACTUAL source progress, not a random time ticker. It
+ *     fills as real sources are reached and configs are extracted.
+ *   • NO false "connection error". We only report failure when NOT ONE of the
+ *     sources could be opened (a genuine offline state). Reaching any source and
+ *     extracting a valid config == success.
+ *   • The probe returns the FULL batch it collected (up to [TARGET]) so the page
+ *     can populate My Configs immediately when the bar hits 100% — the wait the
+ *     user spends watching the bar is the time we spend finding real configs.
  *   • Fully exception-safe: a dead source / malformed line never crashes it.
  */
 object ConnectivityProbe {
@@ -42,209 +41,128 @@ object ConnectivityProbe {
     const val BUDGET_MS = 25_000L
 
     /**
-     * v5.8 — how long we spend actively trying to PING a candidate through the
-     * live Xray core before we simply accept the successfully-FETCHED config as
-     * good. On Iran's weak/unstable mobile links a real proxied ping frequently
-     * can't complete inside the whole-probe budget, which made the probe return
-     * empty ("connection error") even though the 50 source feeds opened fine.
-     * Reaching a source + extracting a valid vless/vmess is itself proof the user
-     * can talk to the feeds, so once that budget elapses we add what we fetched.
+     * How many configs we aim to collect during the probe. This is the SAME
+     * 240-per-press batch size used everywhere else so the first fill is a full
+     * fresh batch. If the reachable sources can't yield this many in the budget
+     * we return whatever we did collect (still a success as long as it's > 0).
      */
-    private const val PING_PHASE_BUDGET_MS = 9_000L
+    const val TARGET = FreeConfigSource.BATCH_PER_PRESS   // 240
 
-    /** How many source feeds we fetch at once. */
-    private const val FETCH_CONCURRENCY = 6
-
-    /** How many candidate configs we ping at once. */
-    private const val PING_CONCURRENCY = 6
+    /**
+     * Minimum we must collect to consider the probe a success. As soon as we have
+     * at least this many real configs from reachable sources, the user is clearly
+     * online and can be given configs. Kept small so a weak Iranian link that can
+     * only open one feed still succeeds.
+     */
+    private const val MIN_SUCCESS = 1
 
     data class Result(
-        /** A vless we could confirm works (fell back to a fetched one on timeout). */
-        val vless: ServerConfig?,
-        /** A vmess we could confirm works (fell back to a fetched one on timeout). */
-        val vmess: ServerConfig?,
-        /**
-         * v5.8 — true if we managed to OPEN at least one source feed and pull a
-         * valid config out of it. This is the real "did we reach the internet /
-         * the sources" signal. `ok` is derived from it so we add configs whenever
-         * the feeds are reachable, whether or not a live ping completed in time.
-         */
-        val reachedSource: Boolean = (vless != null || vmess != null)
+        /** The fresh batch of configs collected from reachable sources. */
+        val configs: List<ServerConfig> = emptyList(),
+        /** True if at least one source feed was opened and yielded a config. */
+        val reachedSource: Boolean = configs.isNotEmpty()
     ) {
-        /**
-         * v5.8 — we have something to add whenever a source was reachable and we
-         * extracted at least one config. We deliberately do NOT require a live
-         * ping to succeed (see [PING_PHASE_BUDGET_MS]); the user pings later,
-         * manually, from My Configs.
-         */
-        val ok: Boolean get() = (vless != null || vmess != null)
+        /** We have something to add whenever we collected at least one config. */
+        val ok: Boolean get() = configs.size >= MIN_SUCCESS
     }
 
     /**
-     * Run the probe. Emits coarse progress (0..100) through [onProgress] for the
-     * page's bar. Returns the first working vless/vmess pair it can confirm.
+     * Run the probe. Emits real progress (0..100) through [onProgress] for the
+     * page's bar. Returns the fresh batch of configs it collected.
+     *
+     * @param seenKeys optional dedup memory so we don't hand back configs the
+     *                 user already has. The collected configs' keys are added to
+     *                 it so the caller can persist them.
      */
     suspend fun probe(
         ctx: Context,
+        seenKeys: MutableSet<String>? = null,
         onProgress: (percent: Int) -> Unit = {}
     ): Result = withContext(Dispatchers.IO) {
-        val res = withTimeoutOrNull(BUDGET_MS) { runProbe(ctx, onProgress) }
-        res ?: Result(null, null, reachedSource = false)
+        val res = withTimeoutOrNull(BUDGET_MS) { runProbe(ctx, seenKeys, onProgress) }
+        // A timeout is NOT a failure by itself: if runProbe already collected
+        // configs before the ceiling hit, we can't see them here, so on timeout
+        // we simply report what a best-effort empty result would — the caller
+        // then falls back to the background engine. In practice runProbe finishes
+        // well within budget because it stops at TARGET.
+        res ?: Result(emptyList(), reachedSource = false)
     }
 
     private suspend fun runProbe(
         ctx: Context,
+        seenKeys: MutableSet<String>?,
         onProgress: (Int) -> Unit
     ): Result = coroutineScope {
-        // Interleave sources so we hit vless / vmess feeds early. Walk in pairs.
-        val vlessSrc = LiveSources.VLESS
-        val vmessSrc = LiveSources.VMESS
-        val pairs = maxOf(vlessSrc.size, vmessSrc.size)
-
-        // Thread-safe result holders (java.util.concurrent atomic refs).
-        // found*  = a config we CONFIRMED with a live ping (best).
-        // fetched* = the FIRST valid config we merely pulled from a reachable
-        //            source (fallback — proves the feeds are reachable even when
-        //            a live ping can't complete on a weak Iranian link).
-        val foundVless = java.util.concurrent.atomic.AtomicReference<ServerConfig?>(null)
-        val foundVmess = java.util.concurrent.atomic.AtomicReference<ServerConfig?>(null)
-        val fetchedVless = java.util.concurrent.atomic.AtomicReference<ServerConfig?>(null)
-        val fetchedVmess = java.util.concurrent.atomic.AtomicReference<ServerConfig?>(null)
-        val reachedAnySource = java.util.concurrent.atomic.AtomicBoolean(false)
-
-        val fetchGate = Semaphore(FETCH_CONCURRENCY)
-        val pingGate = Semaphore(PING_CONCURRENCY)
-        val pingPhaseStartNs = System.nanoTime()
-        fun pingBudgetLeft(): Boolean =
-            (System.nanoTime() - pingPhaseStartNs) / 1_000_000L < PING_PHASE_BUDGET_MS
-
-        // ---- SMOOTH PROGRESS ----
-        // The bar used to jump 2 → 100 because progress only advanced when a whole
-        // source finished (which can be near-instant on failure or seconds on
-        // success). We now drive the bar from a steady time-based ticker so it
-        // ALWAYS moves, and we let real work "pull" it forward when it's ahead of
-        // the clock. The ticker eases toward 95% over the budget window; the final
-        // 100% is emitted when the probe actually completes.
-        val displayed = AtomicInteger(0)
-        // `workFloor` is raised by real progress events so genuine work can push
-        // the bar ahead of the time estimate (but never above 95 until done).
-        val workFloor = AtomicInteger(0)
-        val startNs = System.nanoTime()
-
-        fun emit(target: Int) {
-            val clamped = target.coerceIn(0, 95)
-            // Monotonic: never let the bar go backwards.
-            while (true) {
-                val cur = displayed.get()
-                if (clamped <= cur) return
-                if (displayed.compareAndSet(cur, clamped)) {
-                    onProgress(clamped)
-                    return
-                }
-            }
+        // Seed dedup memory: everything the user already has (persistent seen-set
+        // + My Configs) so the probe never hands back a duplicate. If the caller
+        // passed a set we reuse it (and mutate it); otherwise we build a local one.
+        val seen = seenKeys ?: HashSet<String>().also { s ->
+            runCatching { s.addAll(SeenConfigStore.load(ctx)) }
+            runCatching { ConfigStore(ctx).getServers().forEach { s.add(ConfigParser.dedupKey(it)) } }
         }
 
-        // Steady ticker: every 120ms nudge the bar toward a time-based estimate,
-        // eased so it decelerates as it approaches 95%. Runs until cancelled.
-        val ticker = launch {
-            while (coroutineContext.isActive) {
-                val elapsed = (System.nanoTime() - startNs) / 1_000_000L
-                val frac = (elapsed.toFloat() / BUDGET_MS.toFloat()).coerceIn(0f, 1f)
-                // Ease-out curve: fast at first, gently slowing toward the cap.
-                val eased = (1f - (1f - frac) * (1f - frac))
-                val timeTarget = (eased * 92f).toInt() + 2   // 2 .. 94 over the window
-                emit(maxOf(timeTarget, workFloor.get()))
-                delay(120)
-            }
+        // We pull a fresh, mixed 120-vless + 120-vmess batch straight from the
+        // live source cursor (the SAME path a manual "START SEARCH" uses). This
+        // is the single source of truth for "which source do we try to reach" —
+        // no random filling. FreeConfigSource walks the real feeds a few at a
+        // time and reports genuine progress through its onChunk callback.
+        var lastPct = 0
+        fun emit(p: Int) {
+            val clamped = p.coerceIn(0, 100)
+            if (clamped > lastPct) { lastPct = clamped; onProgress(clamped) }
         }
         emit(2)
 
-        // Test a handful of candidate links from one source. v5.8: the FIRST
-        // valid parsed link is recorded as the "fetched" fallback (proves the
-        // source is reachable); we then try to confirm one with a live ping
-        // ONLY while the ping-phase budget lasts, so a weak link can't stall us.
-        suspend fun testSource(src: LiveSources.Src, isVless: Boolean) {
-            if ((isVless && foundVless.get() != null) || (!isVless && foundVmess.get() != null)) return
-            val body = fetchGate.withPermit {
-                if (!coroutineContext.isActive) return
-                try { SourceFetcher.fetch(src.url) } catch (_: Throwable) { null }
-            } ?: return
-            val links = try { SourceFetcher.extractLinks(body, src.kind, limit = 24) } catch (_: Throwable) { emptyList() }
-            if (links.isEmpty()) return
+        // Ensure first-launch / 30-day reset state is honoured.
+        runCatching { FreeConfigSource.ensureFreshState(ctx) }
 
-            // We opened a source and it yielded usable links → the feeds ARE
-            // reachable. Record the first valid config as the fallback right away.
-            for (link in links) {
-                val cfg = try { ConfigParser.parseSingleSafe(link) } catch (_: Throwable) { null } ?: continue
-                reachedAnySource.set(true)
-                if (isVless) fetchedVless.compareAndSet(null, cfg)
-                else fetchedVmess.compareAndSet(null, cfg)
-                break
+        val batch = runCatching {
+            FreeConfigSource.nextBatch(
+                ctx = ctx,
+                startIndex = 0,
+                seenKeys = seen
+            ) { added, target, _ ->
+                if (!coroutineContext.isActive) return@nextBatch
+                // REAL progress: how much of the target batch we've actually
+                // pulled from reachable sources. Cap at 96 until we've fully
+                // finished so the final 100 is only emitted on completion.
+                val pct = if (target > 0) (added * 96 / target) else 0
+                emit(pct.coerceIn(2, 96))
             }
+        }.getOrNull()
 
-            // Try to CONFIRM one with a real proxied ping — but only while we
-            // still have ping-phase budget. If we run out, the fetched fallback
-            // above is what we'll use; we do NOT block the whole probe on it.
-            coroutineScope {
-                for (link in links) {
-                    if ((isVless && foundVless.get() != null) || (!isVless && foundVmess.get() != null)) break
-                    if (!pingBudgetLeft()) break
-                    launch {
-                        if ((isVless && foundVless.get() != null) || (!isVless && foundVmess.get() != null)) return@launch
-                        if (!pingBudgetLeft()) return@launch
-                        val cfg = try { ConfigParser.parseSingleSafe(link) } catch (_: Throwable) { null } ?: return@launch
-                        val ms = pingGate.withPermit {
-                            if (!coroutineContext.isActive || !pingBudgetLeft()) return@withPermit -1L
-                            try { Pinger.ping(cfg) } catch (_: Throwable) { -1L }
-                        }
-                        if (ms in 1..8_000L) {
-                            if (isVless) foundVless.compareAndSet(null, cfg)
-                            else foundVmess.compareAndSet(null, cfg)
-                        }
-                    }
+        val configs = batch?.configs ?: emptyList()
+
+        // v5.9 — THE "second/third Auto Test adds nothing" FIX (probe side).
+        //
+        // If the current source cursor served only already-seen configs, `batch`
+        // comes back empty while `reachedSource` is true (feeds ARE reachable,
+        // everything was just a duplicate). We clear the dedup memory and retry so
+        // a repeat Auto Test always re-serves the currently-live configs instead
+        // of coming back empty. We only skip this when the feeds were genuinely
+        // unreachable (offline) — that is the ONLY real error case.
+        val finalConfigs = if (configs.isEmpty() && batch?.reachedSource == true) {
+            runCatching {
+                seenKeys?.clear()
+                SeenConfigStore.performReset(ctx)
+                val fresh = seenKeys ?: HashSet()
+                runCatching { ConfigStore(ctx).getServers().forEach { fresh.add(ConfigParser.dedupKey(it)) } }
+                FreeConfigSource.nextBatch(
+                    ctx = ctx,
+                    startIndex = 0,
+                    seenKeys = fresh
+                ) { added, target, _ ->
+                    val pct = if (target > 0) (added * 96 / target) else 0
+                    emit(pct.coerceIn(2, 96))
                 }
-            }
-            // Real progress "pull": raise the work floor a little each time a
-            // source finishes so genuine work can run ahead of the time estimate.
-            val step = (90 / maxOf(pairs, 1)).coerceAtLeast(1)
-            val nf = workFloor.addAndGet(step).coerceAtMost(94)
-            emit(nf)
-        }
+            }.getOrNull()?.configs ?: emptyList()
+        } else configs
 
-        // Walk source pairs. v5.8: keep going until we have a CONFIRMED (pinged)
-        // vless+vmess, OR we run out of ping budget once we already have a
-        // fetched fallback for both (no point burning the rest of the wall-clock
-        // pinging when the feeds are clearly reachable and the user pings later).
-        outer@ for (i in 0 until pairs) {
-            val haveConfirmedBoth = foundVless.get() != null && foundVmess.get() != null
-            if (haveConfirmedBoth) break@outer
-            val haveFetchedBoth = fetchedVless.get() != null && fetchedVmess.get() != null
-            if (haveFetchedBoth && !pingBudgetLeft()) break@outer
-
-            val jobs = ArrayList<kotlinx.coroutines.Deferred<Unit>>()
-            if (i < vlessSrc.size && foundVless.get() == null) {
-                jobs.add(async { testSource(vlessSrc[i], isVless = true) })
-            }
-            if (i < vmessSrc.size && foundVmess.get() == null) {
-                jobs.add(async { testSource(vmessSrc[i], isVless = false) })
-            }
-            jobs.forEach { runCatching { it.await() } }
-        }
-
-        ticker.cancel()
+        emit(100)
         onProgress(100)
 
-        // v5.8 — prefer a ping-confirmed config, else fall back to a config we
-        // simply fetched from a reachable source. Only when NOTHING was fetched
-        // (i.e. not one of the 50 feeds could be opened) do we report failure.
-        val resultVless = foundVless.get() ?: fetchedVless.get()
-        val resultVmess = foundVmess.get() ?: fetchedVmess.get()
-        val reached = reachedAnySource.get() || resultVless != null || resultVmess != null
-        Log.i(
-            TAG,
-            "probe done: reached=$reached, vless=${resultVless != null}(ping=${foundVless.get() != null}), " +
-                "vmess=${resultVmess != null}(ping=${foundVmess.get() != null})"
-        )
-        Result(resultVless, resultVmess, reachedSource = reached)
+        val reached = finalConfigs.isNotEmpty()
+        Log.i(TAG, "probe done: reached=$reached, collected=${finalConfigs.size}")
+        Result(finalConfigs, reachedSource = reached)
     }
 }

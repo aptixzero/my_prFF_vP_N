@@ -49,13 +49,28 @@ object FreeConfigSource {
     private const val KEY_NAME_COUNTER = "name_counter"
     private const val KEY_SEEDED = "seeded"
 
-    /** Max source feeds walked per kind in one press (keeps it fast). */
-    private const val MAX_SOURCES_PER_PRESS = 6
+    /**
+     * Max source feeds walked per kind in one press. v5.9 — raised from 6 to 12
+     * so that when the first few feeds return only already-seen configs, the
+     * press keeps walking further sources to still fill its 120/120 quota with
+     * FRESH configs (this is part of the "a repeat Auto Test must keep adding
+     * configs" fix). There are 25 feeds per kind, so this is still under half.
+     */
+    private const val MAX_SOURCES_PER_PRESS = 12
 
     data class Batch(
         val configs: List<ServerConfig>,   // already renamed Server N, interleaved
         val foundRaw: Int,
-        val reachedEnd: Boolean
+        val reachedEnd: Boolean,
+        /**
+         * v5.9 — true if AT LEAST ONE source feed was successfully opened during
+         * this press (regardless of whether it yielded NEW configs). This lets a
+         * caller tell "empty because offline" (reachedSource=false) apart from
+         * "empty because everything we saw was already-seen" (reachedSource=true)
+         * — the latter must trigger a dedup-memory reset so a repeat Auto Test
+         * can serve currently-live configs again instead of coming back empty.
+         */
+        val reachedSource: Boolean = false
     )
 
     private fun prefs(ctx: Context) = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -98,16 +113,17 @@ object FreeConfigSource {
         // Collect each kind independently from its own source cursor.
         val vlessOut = ArrayList<ServerConfig>(VLESS_PER_PRESS)
         val vmessOut = ArrayList<ServerConfig>(VMESS_PER_PRESS)
+        val reached = java.util.concurrent.atomic.AtomicBoolean(false)
 
         var vlessCursor = collectKind(
             ctx, LiveSources.VLESS, p.getInt(KEY_VLESS_CURSOR, 0),
-            VLESS_PER_PRESS, seenKeys, vlessOut
+            VLESS_PER_PRESS, seenKeys, vlessOut, reached
         )
         onChunk(vlessOut.size, BATCH_PER_PRESS, "Found ${vlessOut.size} VLESS")
 
         var vmessCursor = collectKind(
             ctx, LiveSources.VMESS, p.getInt(KEY_VMESS_CURSOR, 0),
-            VMESS_PER_PRESS, seenKeys, vmessOut
+            VMESS_PER_PRESS, seenKeys, vmessOut, reached
         )
         onChunk(vlessOut.size + vmessOut.size, BATCH_PER_PRESS,
             "Found ${vlessOut.size + vmessOut.size} configs")
@@ -140,8 +156,8 @@ object FreeConfigSource {
 
         onChunk(named.size, BATCH_PER_PRESS, "Added ${named.size} configs")
         Log.i(TAG, "press: +${named.size} (vless=${vlessOut.size}, vmess=${vmessOut.size}, " +
-            "vlessCursor→$vlessCursor, vmessCursor→$vmessCursor)")
-        Batch(named, named.size, reachedEnd = false)
+            "vlessCursor→$vlessCursor, vmessCursor→$vmessCursor, reached=${reached.get()})")
+        Batch(named, named.size, reachedEnd = false, reachedSource = reached.get())
     }
 
     /**
@@ -155,7 +171,8 @@ object FreeConfigSource {
         startCursor: Int,
         need: Int,
         seenKeys: MutableSet<String>,
-        out: MutableList<ServerConfig>
+        out: MutableList<ServerConfig>,
+        reached: java.util.concurrent.atomic.AtomicBoolean
     ): Int {
         if (sources.isEmpty()) return startCursor
         var cursor = ((startCursor % sources.size) + sources.size) % sources.size
@@ -164,6 +181,10 @@ object FreeConfigSource {
             val src = sources[cursor]
             val body = try { SourceFetcher.fetch(src.url) } catch (_: Throwable) { null }
             if (!body.isNullOrBlank()) {
+                // v5.9 — we opened a source successfully → the feeds ARE reachable.
+                // This is recorded even when every link it yields is already-seen,
+                // so a caller can tell "offline" apart from "all duplicates".
+                reached.set(true)
                 val links = try { SourceFetcher.extractLinks(body, src.kind) } catch (_: Throwable) { emptyList() }
                 for (link in links) {
                     if (out.size >= need) break
