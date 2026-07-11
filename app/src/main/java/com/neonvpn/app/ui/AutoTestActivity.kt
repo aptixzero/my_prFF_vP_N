@@ -63,32 +63,36 @@ class AutoTestActivity : BaseActivity() {
                     }
                 }
             } catch (_: Throwable) {
-                ConnectivityProbe.Result(null, null)
+                ConnectivityProbe.Result(null, null, reachedSource = false)
             }
 
-            // v5.7 — the connectivity test scan line has now FULLY finished.
-            // Decide here (not later): only if we actually confirmed at least one
-            // reachable vless/vmess do we save the configs and start the engine.
+            // v5.8 — the connectivity scan line has FULLY finished. We now add the
+            // configs whenever the source FEEDS were reachable — we do NOT require
+            // a live ping to have completed (on Iran's weak links a real proxied
+            // ping often can't finish inside the budget, but reaching the feed and
+            // pulling a valid vless/vmess is itself proof the user is online). The
+            // user pings later, manually, from My Configs.
             if (result.ok) {
-                // Save the confirmed working pair straight into My Configs, and
-                // wait for the write to complete BEFORE we leave the page so the
-                // configs are guaranteed present when the user lands on My Configs.
+                // Save the fetched (and where possible ping-confirmed) vless+vmess
+                // straight into My Configs. The write COMPLETES before we leave the
+                // page so the configs are guaranteed present on My Configs.
                 val addedCount = runCatching { saveResult(result) }.getOrDefault(0)
 
-                // Kick off the continuous engine to keep filling My Configs.
+                // Kick off the continuous engine to keep filling My Configs with
+                // more working configs in the background.
                 runCatching { AutoTestEngine.start(applicationContext) }
 
                 runOnUiThread {
-                    if (addedCount > 0) {
-                        toast(getString(R.string.probe_saved, addedCount))
-                    }
+                    if (addedCount > 0) toast(getString(R.string.probe_saved, addedCount))
                 }
-                // Close the page and return to Home — the engine keeps working.
                 finishSafely()
             } else {
-                // v5.7 — NO source responded (no reachable config found). Tell the
-                // user clearly ("connection error, please try again") and do NOT
-                // silently start the background engine — nothing was added.
+                // Nothing could be fetched from ANY of the 50 feeds — the user
+                // genuinely has no path to the sources right now. Show the error,
+                // but STILL start the background engine so that the moment the
+                // (unstable Iranian) connection recovers, configs start arriving
+                // without the user having to tap Auto Test again.
+                runCatching { AutoTestEngine.start(applicationContext) }
                 runOnUiThread {
                     if (!isFinishing) {
                         animateBarTo(100)
@@ -96,7 +100,6 @@ class AutoTestActivity : BaseActivity() {
                         toast(getString(R.string.probe_error))
                     }
                 }
-                // Give the toast a beat to appear before returning home.
                 kotlinx.coroutines.delay(1_400)
                 finishSafely()
             }
