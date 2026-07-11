@@ -143,49 +143,19 @@ class FreeConfigsFragment : Fragment() {
             try { FreeConfigSource.ensureFreshState(requireContext()) } catch (_: Throwable) {}
         }
 
-        // v5.6 — AUTO PING. The Free tab now automatically pings any configs that
-        // have never been tested (or lost their result) whenever it becomes
-        // visible, and keeps a light periodic re-test running so the coloured
-        // pings stay fresh WITHOUT the user having to press "PING ALL". This runs
-        // on the app-scoped PingService, so switching tabs / backgrounding does
-        // not cancel an in-flight sweep, and the results persist.
-        startAutoPingLoop()
-    }
-
-    /** Background driver that keeps free configs auto-pinged (v5.6). */
-    private var autoPingJob: Job? = null
-
-    private fun startAutoPingLoop() {
-        autoPingJob?.cancel()
-        autoPingJob = viewLifecycleOwner.lifecycleScope.launch {
-            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
-                while (isActive) {
-                    // Do NOT fight the manual/auto-test flows.
-                    if (!busy && !AutoTestEngine.isRunning && adapter.items.isNotEmpty()) {
-                        val map = PingService.statuses.value
-                        val untested = adapter.items.any {
-                            val s = map[ConfigParser.pingKey(it)]
-                            s == null || s == PingService.PingStatus.Idle
-                        }
-                        if (untested) {
-                            PingService.pingAll(
-                                requireContext(), adapter.items.toList(), PingStore.FREE
-                            )
-                        }
-                    }
-                    kotlinx.coroutines.delay(6_000)
-                }
-            }
-        }
+        // v5.7 — NO automatic pinging. Pings are taken ONLY when the user asks
+        // for them (per-row PING button or PING ALL). Opening / switching to this
+        // tab, START SEARCH, screen off/on and relaunch must NEVER start a ping
+        // sweep on their own, and must NEVER clear existing results. The persisted
+        // (content-keyed) results are simply re-rendered.
     }
 
     override fun onDestroyView() {
         super.onDestroyView()
         job?.cancel()
-        autoPingJob?.cancel()
         // NOTE: do NOT stop AutoTestEngine here — it is app-scoped and must keep
         // running across tab switches until the user explicitly cancels it.
-        // The PingService sweep is ALSO app-scoped, so an in-flight auto-ping
+        // The PingService sweep is ALSO app-scoped, so an in-flight manual ping
         // survives this view being destroyed (the results still persist).
     }
 
@@ -307,19 +277,16 @@ class FreeConfigsFragment : Fragment() {
             if (!isActive || !isAdded) return@launch
 
             if (batch.configs.isNotEmpty()) {
-                // v4.7 — go through the atomic submitList (diff computed against
-                // what the RecyclerView actually displays) instead of mutating
-                // adapter.items in place + notifyDataSetChanged.
+                // v5.7 — APPEND the fresh configs to the END of the list and do
+                // NOT re-sort or auto-ping. New rows land untested at the bottom;
+                // the user's current scroll position (and any previously-pinged
+                // rows already pinned at the top) stays exactly where it was. A
+                // ping is taken only when the user presses PING ALL / a row PING.
                 val merged = ArrayList(adapter.items).apply { addAll(batch.configs) }
                 freeStore.replaceAll(merged)
-                adapter.submitList(merged, PingService.statuses.value)
+                adapter.appendItems(batch.configs)
                 refreshEmpty()
                 updateListHeader()
-                // v5.6 — auto-ping the freshly-added configs right away so the
-                // user sees live colour-coded pings without pressing PING ALL.
-                if (!AutoTestEngine.isRunning) {
-                    PingService.pingAll(requireContext(), merged, PingStore.FREE)
-                }
             }
 
             showProgress(
@@ -385,10 +352,25 @@ class FreeConfigsFragment : Fragment() {
                 if (!anyTesting && done >= total) break
                 kotlinx.coroutines.delay(250)
             }
-            // v5.6 — sort ONCE at the end of a manual sweep (not on every tick).
-            if (isAdded) { adapter.sortByPing(); persistCurrentOrder() }
+            // v5.7 — sort ONCE at the end of a manual sweep (not on every tick),
+            // pinning the pinging configs to the TOP, then SNAP the view back to
+            // the top so the user stays exactly where the healthy servers are —
+            // never dragged down to the dead ones at the bottom.
+            if (isAdded) {
+                adapter.sortByPing()
+                persistCurrentOrder()
+                scrollToTop()
+            }
             setBusy(false)
             hideProgressDelayed()
+        }
+    }
+
+    /** v5.7 — keep the user pinned to the top (where the healthy servers are). */
+    private fun scrollToTop() {
+        runCatching {
+            val rv = view?.findViewById<RecyclerView>(R.id.recycler) ?: return
+            rv.post { runCatching { rv.scrollToPosition(0) } }
         }
     }
 

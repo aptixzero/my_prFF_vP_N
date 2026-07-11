@@ -174,4 +174,8 @@
 
     <!-- ===== v4.6 — Auto Test probe page ===== -->
     <string name="autotest_probe_title">Testing your connection…</string>
+
+    <!-- ===== v5.7 — Auto Test probe result messages ===== -->
+    <string name="probe_error">Connection error — please try again</string>
+    <string name="probe_saved">%1$d config(s) added to My Configs</string>
 </resources>

@@ -152,4 +152,8 @@
 
     <!-- ===== v4.6 — Auto Test probe page ===== -->
     <string name="autotest_probe_title">در حال تست اتصال شما…</string>
+
+    <!-- ===== v5.7 — Auto Test probe result messages ===== -->
+    <string name="probe_error">خطا در ارتباط — لطفاً دوباره تلاش کنید</string>
+    <string name="probe_saved">%1$d کانفیگ به My Configs اضافه شد</string>
 </resources>

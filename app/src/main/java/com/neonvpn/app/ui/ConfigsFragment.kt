@@ -262,8 +262,20 @@ class ConfigsFragment : Fragment() {
                 if (::adapter.isInitialized && isAdded) {
                     adapter.sortByPing()
                     store.reorder(adapter.items.map { it.id })
+                    // v5.7 — after pinning the healthy configs to the top, snap the
+                    // view back to the top so the user stays with the working
+                    // servers instead of being carried down to the dead ones.
+                    scrollToTop()
                 }
             }
+        }
+    }
+
+    /** v5.7 — keep the user pinned to the top (where the healthy servers are). */
+    private fun scrollToTop() {
+        runCatching {
+            val rv = view?.findViewById<RecyclerView>(R.id.recycler) ?: return
+            rv.post { runCatching { rv.scrollToPosition(0) } }
         }
     }
 
@@ -359,6 +371,25 @@ class ServerAdapter(
      */
     fun sortByPing() {
         submitList(ArrayList(items), statuses)
+    }
+
+    /**
+     * v5.7 — APPEND new rows to the END of the list WITHOUT re-sorting and
+     * WITHOUT touching the existing rows' positions. This keeps the user's scroll
+     * position stable when they press "START SEARCH": fresh, untested configs
+     * simply appear at the bottom, and any previously-pinged rows already pinned
+     * at the top stay put. Uses a targeted range insert so the RecyclerView does
+     * not scroll or rebind unrelated rows.
+     */
+    fun appendItems(newOnes: List<ServerConfig>) {
+        if (newOnes.isEmpty()) return
+        runCatching {
+            val start = items.size
+            items.addAll(newOnes)
+            notifyItemRangeInserted(start, newOnes.size)
+        }.onFailure {
+            runCatching { notifyDataSetChanged() }
+        }
     }
 
     /**
