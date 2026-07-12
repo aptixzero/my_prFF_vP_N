@@ -155,5 +155,5 @@
 
     <!-- ===== v5.7 — Auto Test probe result messages ===== -->
     <string name="probe_error">خطا در ارتباط — لطفاً دوباره تلاش کنید</string>
-    <string name="probe_saved">%1$d کانفیگ به My Configs اضافه شد</string>
+    <string name="probe_saved">%1$d کانفیگ به Free Configs اضافه شد — در حال تست…</string>
 </resources>

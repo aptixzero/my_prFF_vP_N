@@ -11,6 +11,7 @@ import com.neonvpn.app.config.AutoTestEngine
 import com.neonvpn.app.config.ConfigParser
 import com.neonvpn.app.config.ConfigStore
 import com.neonvpn.app.config.ConnectivityProbe
+import com.neonvpn.app.config.FreeConfigStore
 import com.neonvpn.app.config.PingService
 import com.neonvpn.app.config.PingStore
 import com.neonvpn.app.config.SeenConfigStore
@@ -21,7 +22,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * v6.0 — AUTO TEST connectivity page (two-phase, no fake error).
+ * v6.1 — AUTO TEST connectivity page (two-phase, no fake error).
  *
  * A deliberately minimal screen: a title + a progress bar. On open it runs the
  * two-phase [ConnectivityProbe]:
@@ -29,15 +30,27 @@ import kotlinx.coroutines.withContext
  *   0 % → 60 %  : a REAL connection test against the live source feeds — it opens
  *                 each source and finds which one the user can actually reach, and
  *                 bonds to it. The bar advances as each source is genuinely probed
- *                 (no random timer, no `delay()`).
+ *                 (no random timer, no `delay()`). v6.1: the bar does NOT lock on
+ *                 a single number — the probe keeps re-trying so long as the link
+ *                 recovers, and only pauses (holds) while the internet is fully
+ *                 down, resuming the instant it is reachable again.
  *   60 % → 100 %: it pulls a FULL fresh 240 batch of configs FROM THAT reached
  *                 source, in the background (the user does not see the Free tab).
  *                 The bar climbs as configs are actually collected.
  *
- * When the bar reaches 100 % the collected configs are added to My Configs the
- * SAME instant, the page closes, and a PING ALL is kicked off automatically so
- * the working configs sort to the top. The continuous [AutoTestEngine] is then
- * started to keep filling My Configs 240-at-a-time from the same bonded source.
+ * v6.1 — THE BIG FIX: the collected 240 configs are added to **FREE CONFIGS**
+ * (not My Configs). My Configs is the user's PERMANENT, hand-curated bucket — it
+ * must ONLY ever contain configs the user pasted/added manually, plus the ones
+ * that actually ping (the working ones), which the continuous [AutoTestEngine]
+ * copies in automatically after they pass the ping test. Dumping all 240 raw
+ * configs into My Configs (the pre-6.1 bug) was wrong.
+ *
+ * So at 100 %: the 240 fresh configs are placed in the Free list, the page
+ * closes, and the continuous [AutoTestEngine] is (re)started. The engine then
+ * pings the whole Free batch and, for EACH config that returns a real ping,
+ * copies it — live, one by one — into My Configs. When the 240 are exhausted it
+ * REPLACES the Free list with a brand-new 240 batch and repeats. My Configs is
+ * never wiped by this flow.
  *
  * There is NO false "connection error" — the reported bug. Even when the network
  * is momentarily unreachable we simply close quietly and let the background engine
@@ -95,33 +108,27 @@ class AutoTestActivity : BaseActivity() {
                 ConnectivityProbe.Result(emptyList(), reachedSource = false)
             }
 
-            // v6.0 — the bar has reached 100 % (real source work done). Add the
-            // collected configs to My Configs RIGHT NOW so they are guaranteed
-            // present the moment the page closes. We NEVER show a "connection
-            // error": whether we collected configs or not, we start the background
-            // engine (so configs keep arriving as the unstable link recovers) and
-            // close quietly. When configs WERE collected we also fire an automatic
-            // PING ALL so the user immediately sees the working ones pinned on top.
+            // v6.1 — the bar has reached 100 % (real source work done). Place the
+            // collected 240 configs into FREE CONFIGS right now (NOT My Configs) so
+            // they are present the moment the page closes. We NEVER show a
+            // "connection error": whether we collected configs or not, we start the
+            // background engine (so configs keep arriving as the unstable link
+            // recovers) and close quietly.
             val addedCount = if (result.configs.isNotEmpty()) {
                 runCatching { saveResult(result.configs, seenKeys) }.getOrDefault(0)
             } else 0
 
-            // Always (RE)start the continuous engine — it keeps filling My Configs
-            // 240-at-a-time from the SAME bonded source in the background. Using
-            // restart() (not start()) means opening this page again — even while a
-            // previous run is still going — never wedges the engine or leaves two
-            // loops fighting; it always begins a fresh, clean search+add cycle.
+            // Always (RE)start the continuous engine — it pings the fresh Free
+            // batch and copies ONLY the configs that actually ping into My Configs,
+            // 240-at-a-time from the SAME bonded source. Using restart() (not
+            // start()) means opening this page again — even while a previous run is
+            // still going — never wedges the engine or leaves two loops fighting; it
+            // always begins a fresh, clean search+ping+move cycle. The engine also
+            // owns the Free-list ping sweep, so we do NOT ping here (pinging both
+            // here and in the engine would double-drive the same list).
             runCatching { AutoTestEngine.restart(applicationContext) }
 
-            // v6.0 — auto-ping the freshly-added batch so working configs sort to
-            // the top the instant the user lands back on My Configs.
             if (addedCount > 0) {
-                runCatching {
-                    val list = ConfigStore(applicationContext).getServers()
-                    if (list.isNotEmpty()) {
-                        PingService.pingAll(applicationContext, list, PingStore.MY)
-                    }
-                }
                 runOnUiThread { toast(getString(R.string.probe_saved, addedCount)) }
             }
             finishSafely()
@@ -135,24 +142,27 @@ class AutoTestActivity : BaseActivity() {
     }
 
     /**
-     * v5.9 — add the freshly-probed batch to My Configs.
+     * v6.1 — place the freshly-probed batch into FREE CONFIGS (NOT My Configs).
      *
-     * Per the brief, a fresh Auto Test REPLACES the previous list with 240 new
-     * configs: we WIPE the old My-Configs list and store the new batch. Configs
-     * are numbered sequentially "Server N" (baked into the link's #remark so it
-     * survives being copied into another client), and the first one is selected.
+     * A fresh Auto Test REPLACES the previous FREE list with the new 240 batch —
+     * this is the "free configs like the older versions" behaviour: the Free tab
+     * shows exactly the batch currently under test. Configs are numbered
+     * sequentially "Server N" (baked into the link's #remark so the number
+     * survives being copied into another client).
      *
-     * @return how many configs were actually added to My Configs.
+     * CRITICAL: My Configs is NOT touched here. It is the user's permanent bucket
+     * (manual pastes + configs that actually ping). Only the continuous
+     * [AutoTestEngine] adds to My Configs, and only for configs that pass the ping
+     * test. So a fresh Auto Test never wipes or bloats My Configs.
+     *
+     * @return how many configs were actually placed in the Free list.
      */
     private suspend fun saveResult(
         configs: List<ServerConfig>,
         seenKeys: MutableSet<String>
     ): Int = withContext(Dispatchers.IO) {
         if (configs.isEmpty()) return@withContext 0
-        val store = ConfigStore(applicationContext)
-
-        // WIPE the previous list — a fresh Auto Test gives a brand-new 240 batch.
-        runCatching { store.saveServers(emptyList()) }
+        val freeStore = FreeConfigStore(applicationContext)
 
         // Number them "Server 1..N" and bake the name into the raw link's remark.
         val named = ArrayList<ServerConfig>(configs.size)
@@ -168,13 +178,17 @@ class AutoTestActivity : BaseActivity() {
             )
         }
 
-        val added = store.addServers(named)
-        if (store.getSelectedId() == null) {
-            store.getServers().firstOrNull()?.let { store.setSelectedId(it.id) }
-        }
+        // REPLACE the previous Free batch with this brand-new one (old batch wiped,
+        // new 240 take their place) — exactly like the older versions' Free tab.
+        runCatching { freeStore.replaceAll(named) }
+
+        // Clear any stale ping results for rows that no longer exist so the Free
+        // bucket's badges reflect only the current batch.
+        runCatching { PingService.clear(applicationContext, PingStore.FREE) }
+
         // Persist the dedup memory so the NEXT batch prefers fresh configs.
         runCatching { SeenConfigStore.save(applicationContext, seenKeys) }
-        added
+        named.size
     }
 
     /**

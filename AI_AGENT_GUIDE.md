@@ -134,14 +134,28 @@ Don't disable it.
 - "Paste From Clipboard" button at top. Detects and adds **only** vless/vmess even
   inside mixed text (trojan/ss/emoji/symbols are ignored).
 - Select all / delete all / ping all / Copy (when selected).
+- **v6.1 — PERMANENT & CLEAN bucket.** My Configs contains ONLY: (a) configs the
+  user pasted/added by hand, and (b) configs that **actually ping** — the ones
+  the `AutoTestEngine` copies in one-by-one AFTER they pass the ping test. It is
+  **never** stuffed with a raw 240 batch, and it is **never** auto-wiped by a
+  search / Auto Test / batch rotation — only a manual delete clears it.
+- **No auto-ping here.** Pings are taken ONLY on the per-row PING button or PING
+  ALL. Opening the tab / relaunch / screen off-on must never start a sweep.
+- **Last ping sticks.** Ping results are content-keyed (`ConfigParser.pingKey`),
+  so the last measured ping survives restart / tab switch / rename to "Server N".
 
 ### Free Configs tab
 - Modes: **Manual (Search)**, **Automatic**, **Auto Test** (+ combined fallback).
 - Ping all with **real, color-coded pings** (green=low / orange=medium / red=high).
 - Configs that ping are pinned to the top; non-pinging fall to the bottom.
-- **Auto Test:** adds 100 configs (Server 1–100); every 24h it resets to Server 1
-  with fresh configs, tests 10 at a time, keeps **6 working** ones and deletes the
-  rest.
+- **v6.1 — Search / Auto Test open the two-phase connection-test page** (0→60 %
+  real connectivity test, 60→100 % pull a fresh **240** batch from the reached
+  source). The 240 batch is placed in **Free Configs** (the old Free batch is
+  wiped and replaced) — NOT My Configs.
+- **v6.1 — Auto Test loop** (`AutoTestEngine`): pings the whole Free batch, copies
+  EACH config that pings into My Configs live, and when the 240 are exhausted it
+  wipes the Free list and pulls a brand-new 240 from the same bonded source, then
+  repeats — until the user presses Cancel. My Configs is preserved across cycles.
 - Clicking a free config auto-saves it permanently to My Configs.
 
 ### Sponsor tab

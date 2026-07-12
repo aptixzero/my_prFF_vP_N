@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -46,11 +47,24 @@ object ConnectivityProbe {
     private const val TAG = "ConnectivityProbe"
 
     /**
-     * Whole-probe wall-clock ceiling — the page never waits longer than this. It
-     * is generous (Iranian links are slow) but finite so a totally dead network
-     * can't wedge the page. Real completion almost always happens well before it.
+     * v6.1 — Whole-probe wall-clock ceiling. Generous so a slow-but-alive Iranian
+     * link is never cut short, yet finite so a totally dead network can't wedge
+     * the page forever. The bar HOLDS (locks) on its current value while the link
+     * is fully down inside phase 1 and only resumes once a source becomes
+     * reachable again — so this ceiling only ever bites after minutes of a
+     * genuinely dead connection, at which point we close quietly (no fake error).
      */
-    const val BUDGET_MS = 45_000L
+    const val BUDGET_MS = 240_000L
+
+    /**
+     * v6.1 — how long a single connectivity round may take before we treat the
+     * link as "down this round" and re-try (holding the bar). Bound so the retry
+     * loop stays responsive on a flapping link.
+     */
+    private const val ROUND_BUDGET_MS = 30_000L
+
+    /** v6.1 — pause between phase-1 retries while the internet is fully down. */
+    private const val RETRY_PAUSE_MS = 1_500L
 
     /** Boundary between the connection-test phase and the config-collect phase. */
     private const val PHASE1_END = 60
@@ -119,9 +133,48 @@ object ConnectivityProbe {
         // confirmed a reachable feed for each kind (that is what "the connection
         // is up and we know which source to use" means). If the user is already
         // bonded to a source, we verify THAT source first (fast path).
-        val connTest = runCatching { testConnectivity(ctx) { pct -> emit(pct) } }
-            .getOrDefault(ConnTest(reached = false))
-        emit(PHASE1_END)
+        //
+        // v6.1 — THE "don't lock on a number" FIX. The bar must NOT freeze forever
+        // on a mid-run value, and it must NOT run all the way to 100 % while the
+        // internet is actually down. So we run the connection test in a RETRY LOOP:
+        // each round the bar climbs as sources are really probed; if the round
+        // ends WITHOUT reaching any source (link fully down) we HOLD the bar on
+        // its current value, pause briefly, and try the whole round again. The
+        // instant a source becomes reachable the bar resumes and we advance to
+        // phase 2. We keep the highest bar value reached across rounds so it never
+        // goes backwards. This whole loop is bounded by BUDGET_MS.
+        var connTest = ConnTest(reached = false)
+        while (coroutineContext.isActive) {
+            connTest = runCatching {
+                withTimeoutOrNull(ROUND_BUDGET_MS) {
+                    testConnectivity(ctx) { pct -> emit(pct) }
+                } ?: ConnTest(reached = false)
+            }.getOrDefault(ConnTest(reached = false))
+
+            if (connTest.reached) break
+
+            // Fully down this round — HOLD the bar where it is (do NOT push to 60 %
+            // and do NOT advance into phase 2 yet). Pause, then re-test. When the
+            // link recovers the next round reaches a source and we continue.
+            if (!coroutineContext.isActive) break
+            emit(lastPct)                 // re-assert current value (never regress)
+            delay(RETRY_PAUSE_MS)
+        }
+        // Only advance the bar to the phase boundary once we have genuinely reached
+        // a source. If we exited the loop without reaching one (budget/cancel), the
+        // bar stays where it locked and we finish quietly below.
+        if (connTest.reached) emit(PHASE1_END)
+
+        // v6.1 — if phase 1 never reached a source (link fully down for the whole
+        // BUDGET_MS, or the page was cancelled), we do NOT run phase 2 and we do
+        // NOT force the bar to 100 %. The bar stays LOCKED where phase 1 left it,
+        // and we finish quietly (the caller shows no error and the background
+        // engine keeps retrying). This is the "lock on a number when the connection
+        // fully drops" behaviour.
+        if (!connTest.reached) {
+            Log.i(TAG, "probe: no source reached (offline) — bar held at $lastPct")
+            return@coroutineScope Result(emptyList(), reachedSource = false)
+        }
 
         // ── PHASE 2 (60..100 %): collect the fresh 240 batch from the reached src ─
         // FreeConfigSource.nextBatch honours the sticky bond set during phase 1, so
@@ -204,7 +257,10 @@ object ConnectivityProbe {
             bandEnd: Int,
             setBond: (Int) -> Unit
         ): Boolean {
-            if (sources.isEmpty()) { emit(bandEnd); return false }
+            // v6.1 — no sources for this kind: nothing to reach. Do NOT push the
+            // bar forward (that would run the bar even with no connectivity);
+            // just report "not reached" so the retry loop can hold + re-test.
+            if (sources.isEmpty()) return false
             val size = sources.size
             // Build the order to try: bonded source first (verify it), then walk.
             val order = ArrayList<Int>(maxTriesPerKind)
@@ -215,9 +271,6 @@ object ConnectivityProbe {
                 if (!coroutineContext.isActive) return anyReached
                 val src = sources[idx]
                 val body = runCatching { SourceFetcher.fetch(src.url) }.getOrNull()
-                // advance the bar for this source attempt (real work just happened)
-                val pct = bandStart + ((i + 1) * (bandEnd - bandStart) / order.size)
-                emit(pct.coerceIn(bandStart, bandEnd))
                 if (!body.isNullOrBlank()) {
                     val links = runCatching {
                         SourceFetcher.extractLinks(body, src.kind, limit = 1)
@@ -225,12 +278,23 @@ object ConnectivityProbe {
                     if (links.isNotEmpty()) {
                         // Reachable AND yields configs → bond to it and stop.
                         setBond(idx)
+                        // advance the bar to this kind's band end ONLY on real
+                        // success (a source was actually reached this round).
                         emit(bandEnd)
                         return true
                     }
                 }
+                // v6.1 — This source was UNREACHABLE. Advance the bar a little for
+                // the real probe work we just did, but CAP it just BELOW bandEnd so
+                // a kind that never reaches any source can never itself carry the
+                // bar to the phase boundary. The boundary (bandEnd / PHASE1_END) is
+                // only emitted on a genuine success above.
+                val ceil = (bandEnd - 1).coerceAtLeast(bandStart)
+                val pct = bandStart + ((i + 1) * (ceil - bandStart) / order.size)
+                emit(pct.coerceIn(bandStart, ceil))
             }
-            emit(bandEnd)
+            // Walked every candidate for this kind without reaching one. Leave the
+            // bar where it climbed (below bandEnd) — the retry loop will hold here.
             return false
         }
 

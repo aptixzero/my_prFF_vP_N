@@ -177,5 +177,5 @@
 
     <!-- ===== v5.7 — Auto Test probe result messages ===== -->
     <string name="probe_error">Connection error — please try again</string>
-    <string name="probe_saved">%1$d config(s) added to My Configs</string>
+    <string name="probe_saved">%1$d config(s) added to Free Configs — testing…</string>
 </resources>
