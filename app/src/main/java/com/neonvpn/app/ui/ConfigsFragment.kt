@@ -99,15 +99,17 @@ class ConfigsFragment : Fragment() {
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 PingService.statuses.collect { map ->
-                    // v5.9 — while a manual PING ALL is in flight, keep the healthy
-                    // configs pinned to the TOP the INSTANT each ping lands (not
-                    // only once at the end) and keep the user parked at the top so
-                    // they always watch the configs that ping — never dragged down
-                    // to the dead ones. Status ticks that don't reorder still just
-                    // refresh row content in place (no jump).
-                    if (pingAllInFlight && isAtTop()) {
+                    // v6.0 — while a manual PING ALL is in flight, RE-SORT the list
+                    // the INSTANT each ping lands so the configs with the LOWEST
+                    // ping are pinned to the top immediately (the v6 brief: "the
+                    // moment a config gives a low ping it is pinned to the top").
+                    // We always re-sort during the sweep; we only auto-scroll the
+                    // user back to the top when they were ALREADY at the top, so a
+                    // reorder never yanks a user who has scrolled down themselves.
+                    if (pingAllInFlight) {
+                        val atTop = isAtTop()
                         adapter.submitList(store.getServers(), map)
-                        scrollToTop()
+                        if (atTop) scrollToTop()
                     } else {
                         adapter.applyStatuses(map)
                     }

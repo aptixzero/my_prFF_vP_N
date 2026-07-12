@@ -167,9 +167,14 @@ object PingService {
      *         are still inside the backoff window.
      */
     fun pingAll(ctx: Context, configs: List<ServerConfig>, bucket: String): Boolean {
+        // v6.0 — a sweep already running just keeps running (a re-tap coalesces
+        // into it) so we don't stack two sweeps; but we NO LONGER block on the
+        // BACKOFF_MS window. The old backoff silently returned false on a rapid
+        // second press, which — combined with the Auto-Test auto-ping — made it
+        // look like "ping stopped working after a couple of tries". A fresh
+        // explicit request always starts a sweep unless one is genuinely in flight.
         val running = sweepJob?.isActive == true
-        val sinceLast = System.currentTimeMillis() - lastSweepEndedAt
-        if (running || sinceLast < BACKOFF_MS) return false
+        if (running) return false
 
         sweepJob = appScope.launch {
             // Mark ONLY untested configs as testing up front so the whole list

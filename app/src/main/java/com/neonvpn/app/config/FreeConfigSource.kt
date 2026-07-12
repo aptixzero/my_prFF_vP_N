@@ -87,6 +87,9 @@ object FreeConfigSource {
             SeenConfigStore.performReset(ctx)
             p.edit().putInt(KEY_VLESS_CURSOR, 0).putInt(KEY_VMESS_CURSOR, 0)
                 .putInt(KEY_NAME_COUNTER, 0).apply()
+            // v6.0 — also drop the sticky source bond so the fresh 30-day cycle
+            // re-discovers which feed is reachable from scratch.
+            ConnectedSourceStore.clear(ctx)
             Log.i(TAG, "30-day reset performed — restarting from source #1")
         }
     }
@@ -115,18 +118,43 @@ object FreeConfigSource {
         val vmessOut = ArrayList<ServerConfig>(VMESS_PER_PRESS)
         val reached = java.util.concurrent.atomic.AtomicBoolean(false)
 
+        // v6.0 — STICKY SOURCE. If the user is already bonded to a working source
+        // (found by a previous connectivity probe / press), START from THAT source
+        // so "the next 240 configs come from the same source we connected to". The
+        // bond is only set when a source is actually reached and yields configs, so
+        // resuming from it keeps every subsequent batch coming from the same, known-
+        // reachable feed. Falls back to the rolling cursor when there is no bond yet.
+        val bondedVless = ConnectedSourceStore.vlessSource(ctx)
+        val bondedVmess = ConnectedSourceStore.vmessSource(ctx)
+        val vlessStart = if (bondedVless >= 0) bondedVless else p.getInt(KEY_VLESS_CURSOR, 0)
+        val vmessStart = if (bondedVmess >= 0) bondedVmess else p.getInt(KEY_VMESS_CURSOR, 0)
+
+        // Records which source index actually yielded configs for each kind so we
+        // can bond to it (the FIRST reachable source that gives us any config).
+        val vlessHitSrc = java.util.concurrent.atomic.AtomicInteger(-1)
+        val vmessHitSrc = java.util.concurrent.atomic.AtomicInteger(-1)
+
         var vlessCursor = collectKind(
-            ctx, LiveSources.VLESS, p.getInt(KEY_VLESS_CURSOR, 0),
-            VLESS_PER_PRESS, seenKeys, vlessOut, reached
+            ctx, LiveSources.VLESS, vlessStart,
+            VLESS_PER_PRESS, seenKeys, vlessOut, reached, vlessHitSrc
         )
         onChunk(vlessOut.size, BATCH_PER_PRESS, "Found ${vlessOut.size} VLESS")
 
         var vmessCursor = collectKind(
-            ctx, LiveSources.VMESS, p.getInt(KEY_VMESS_CURSOR, 0),
-            VMESS_PER_PRESS, seenKeys, vmessOut, reached
+            ctx, LiveSources.VMESS, vmessStart,
+            VMESS_PER_PRESS, seenKeys, vmessOut, reached, vmessHitSrc
         )
         onChunk(vlessOut.size + vmessOut.size, BATCH_PER_PRESS,
             "Found ${vlessOut.size + vmessOut.size} configs")
+
+        // v6.0 — bond to the first source that yielded configs this press (only if
+        // we are not already bonded, so the bond stays stable across the 240-batches).
+        if (bondedVless < 0 && vlessHitSrc.get() >= 0) {
+            ConnectedSourceStore.setVlessSource(ctx, vlessHitSrc.get())
+        }
+        if (bondedVmess < 0 && vmessHitSrc.get() >= 0) {
+            ConnectedSourceStore.setVmessSource(ctx, vmessHitSrc.get())
+        }
 
         // Interleave vless / vmess so the mix is even (vless, vmess, vless …).
         val interleaved = ArrayList<ServerConfig>(vlessOut.size + vmessOut.size)
@@ -164,6 +192,9 @@ object FreeConfigSource {
      * Fill [out] with up to [need] unique configs of one [kind], walking [sources]
      * from [startCursor] forward (wrapping), fetching at most
      * [MAX_SOURCES_PER_PRESS] feeds. Returns the NEXT cursor to resume from.
+     *
+     * @param hitSrc set to the index of the FIRST source that yields at least one
+     *               fresh config (used to bond the user to a working source).
      */
     private suspend fun collectKind(
         ctx: Context,
@@ -172,7 +203,8 @@ object FreeConfigSource {
         need: Int,
         seenKeys: MutableSet<String>,
         out: MutableList<ServerConfig>,
-        reached: java.util.concurrent.atomic.AtomicBoolean
+        reached: java.util.concurrent.atomic.AtomicBoolean,
+        hitSrc: java.util.concurrent.atomic.AtomicInteger? = null
     ): Int {
         if (sources.isEmpty()) return startCursor
         var cursor = ((startCursor % sources.size) + sources.size) % sources.size
@@ -186,6 +218,7 @@ object FreeConfigSource {
                 // so a caller can tell "offline" apart from "all duplicates".
                 reached.set(true)
                 val links = try { SourceFetcher.extractLinks(body, src.kind) } catch (_: Throwable) { emptyList() }
+                val before = out.size
                 for (link in links) {
                     if (out.size >= need) break
                     val cfg = try { ConfigParser.parseSingleSafe(link) } catch (_: Throwable) { null } ?: continue
@@ -193,6 +226,10 @@ object FreeConfigSource {
                     val key = ConfigParser.dedupKey(cfg)
                     if (!seenKeys.add(key)) continue
                     out.add(cfg)
+                }
+                // v6.0 — bond to the FIRST source that actually produced configs.
+                if (hitSrc != null && out.size > before && hitSrc.get() < 0) {
+                    hitSrc.set(cursor)
                 }
             }
             // advance to next source (wrap), whether or not it filled the quota

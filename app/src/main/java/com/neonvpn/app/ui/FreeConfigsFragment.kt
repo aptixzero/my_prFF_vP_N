@@ -167,13 +167,16 @@ class FreeConfigsFragment : Fragment() {
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 PingService.statuses.collect { map ->
-                    // v5.9 — during a manual PING ALL sweep, pin the healthy
-                    // configs to the top the INSTANT each ping lands and keep the
-                    // user parked at the top so they always watch the configs that
-                    // respond — never dragged to the dead ones at the bottom.
-                    if (pingAllInFlight && !AutoTestEngine.isRunning && isAtTop()) {
+                    // v6.0 — during a manual PING ALL sweep, RE-SORT the INSTANT
+                    // each ping lands so the lowest-ping configs pin to the top
+                    // immediately. Auto-scroll to the top only when the user was
+                    // already there, so a reorder never yanks a user who scrolled
+                    // down. (During Auto Test the engine owns the list ordering, so
+                    // we leave that path untouched.)
+                    if (pingAllInFlight && !AutoTestEngine.isRunning) {
+                        val atTop = isAtTop()
                         adapter.submitList(ArrayList(adapter.items), map)
-                        scrollToTop()
+                        if (atTop) scrollToTop()
                     } else {
                         adapter.applyStatuses(map)
                     }
@@ -270,16 +273,18 @@ class FreeConfigsFragment : Fragment() {
     }
 
     // --------------------------------------------------------------- search
+    /**
+     * v6.0 — Manual SEARCH now ALSO opens the connectivity-test page (per the v6
+     * brief: "when the user taps Search — manually — or Auto Test, a connection
+     * test page must open"). The page runs the real two-phase probe (test the
+     * connection to the sources 0..60 %, then add configs 60..100 % from the
+     * reached source) and closes itself, adding the configs behind the scenes.
+     */
     private fun onSearchClicked() {
-        if (AutoTestEngine.isRunning) { toast(getString(R.string.autotest_running)); return }
-        if (busy) {
-            job?.cancel()
-            setBusy(false)
-            btnSearchLabel.text = getString(R.string.start_search)
-            hideProgressDelayed()
-            return
+        if (adapter.selectMode) toggleSelectMode()
+        runCatching {
+            startActivity(android.content.Intent(requireContext(), AutoTestActivity::class.java))
         }
-        startSearch()
     }
 
     private fun startSearch() {
@@ -333,7 +338,16 @@ class FreeConfigsFragment : Fragment() {
     }
 
     // ------------------------------------------------------------ auto test
-    /** v4.0 — toggle the continuous Auto-Test engine (START ⇄ CANCEL). */
+    /**
+     * v6.0 — AUTO TEST. If the engine is already running the button acts as CANCEL
+     * (stops the continuous loop). Otherwise it opens the connectivity-test page,
+     * which runs the two-phase probe and starts the continuous engine itself.
+     *
+     * The engine's own re-entrancy guard ([AutoTestEngine.restart]) means the user
+     * can open this page as many times as they like — even mid-run — without the
+     * engine getting stuck or two loops fighting (the reported "stops adding after
+     * a couple of tries" bug).
+     */
     private fun onAutoTestClicked() {
         if (AutoTestEngine.isRunning) {
             AutoTestEngine.stop()
@@ -344,9 +358,6 @@ class FreeConfigsFragment : Fragment() {
         }
         if (busy) { job?.cancel(); setBusy(false); btnSearchLabel.text = getString(R.string.start_search) }
         if (adapter.selectMode) toggleSelectMode()
-        // v4.6 — open the fast connectivity-probe page. It finds the first working
-        // vless+vmess, saves them, then starts the continuous engine itself. The
-        // engine banner + the CANCEL state below reflect it once it's running.
         runCatching {
             startActivity(android.content.Intent(requireContext(), AutoTestActivity::class.java))
         }

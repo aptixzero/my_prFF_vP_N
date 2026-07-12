@@ -11,6 +11,8 @@ import com.neonvpn.app.config.AutoTestEngine
 import com.neonvpn.app.config.ConfigParser
 import com.neonvpn.app.config.ConfigStore
 import com.neonvpn.app.config.ConnectivityProbe
+import com.neonvpn.app.config.PingService
+import com.neonvpn.app.config.PingStore
 import com.neonvpn.app.config.SeenConfigStore
 import com.neonvpn.app.config.ServerConfig
 import kotlinx.coroutines.Dispatchers
@@ -19,20 +21,27 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * v5.9 — AUTO TEST connectivity page.
+ * v6.0 — AUTO TEST connectivity page (two-phase, no fake error).
  *
  * A deliberately minimal screen: a title + a progress bar. On open it runs the
- * [ConnectivityProbe] which walks the live sources and pulls a FULL fresh batch
- * of configs. The progress bar reflects the REAL work of reaching each source —
- * it fills as configs are actually collected, NOT on a random timer.
+ * two-phase [ConnectivityProbe]:
  *
- * When the bar reaches 100% the collected configs are added to My Configs the
- * SAME instant (the wait the user spends watching the bar IS the time we spend
- * finding real configs), the page closes, and the continuous [AutoTestEngine]
- * is started to keep filling My Configs 240-at-a-time in the background.
+ *   0 % → 60 %  : a REAL connection test against the live source feeds — it opens
+ *                 each source and finds which one the user can actually reach, and
+ *                 bonds to it. The bar advances as each source is genuinely probed
+ *                 (no random timer, no `delay()`).
+ *   60 % → 100 %: it pulls a FULL fresh 240 batch of configs FROM THAT reached
+ *                 source, in the background (the user does not see the Free tab).
+ *                 The bar climbs as configs are actually collected.
  *
- * There is NO false "connection error": we only show it when NOT ONE source
- * could be opened (a genuine offline state).
+ * When the bar reaches 100 % the collected configs are added to My Configs the
+ * SAME instant, the page closes, and a PING ALL is kicked off automatically so
+ * the working configs sort to the top. The continuous [AutoTestEngine] is then
+ * started to keep filling My Configs 240-at-a-time from the same bonded source.
+ *
+ * There is NO false "connection error" — the reported bug. Even when the network
+ * is momentarily unreachable we simply close quietly and let the background engine
+ * keep trying; we never flash "Connection error".
  *
  * Every step is guarded so the page can never crash the app.
  */
@@ -86,41 +95,36 @@ class AutoTestActivity : BaseActivity() {
                 ConnectivityProbe.Result(emptyList(), reachedSource = false)
             }
 
-            // v5.9 — the progress bar has reached 100% (real source work done).
-            // Add the collected configs to My Configs RIGHT NOW so they are
-            // guaranteed present the moment the page closes. Configs are added
-            // whenever a source was reachable — no live ping is required (on
-            // Iran's weak links a proxied ping often can't finish inside the
-            // budget, but reaching a feed and pulling valid vless/vmess is itself
-            // proof the user is online). The user pings later from My Configs.
-            if (result.ok) {
-                val addedCount = runCatching { saveResult(result.configs, seenKeys) }.getOrDefault(0)
+            // v6.0 — the bar has reached 100 % (real source work done). Add the
+            // collected configs to My Configs RIGHT NOW so they are guaranteed
+            // present the moment the page closes. We NEVER show a "connection
+            // error": whether we collected configs or not, we start the background
+            // engine (so configs keep arriving as the unstable link recovers) and
+            // close quietly. When configs WERE collected we also fire an automatic
+            // PING ALL so the user immediately sees the working ones pinned on top.
+            val addedCount = if (result.configs.isNotEmpty()) {
+                runCatching { saveResult(result.configs, seenKeys) }.getOrDefault(0)
+            } else 0
 
-                // Kick off the continuous engine to keep filling My Configs with
-                // more working configs in the background.
-                runCatching { AutoTestEngine.start(applicationContext) }
+            // Always (RE)start the continuous engine — it keeps filling My Configs
+            // 240-at-a-time from the SAME bonded source in the background. Using
+            // restart() (not start()) means opening this page again — even while a
+            // previous run is still going — never wedges the engine or leaves two
+            // loops fighting; it always begins a fresh, clean search+add cycle.
+            runCatching { AutoTestEngine.restart(applicationContext) }
 
-                runOnUiThread {
-                    if (addedCount > 0) toast(getString(R.string.probe_saved, addedCount))
-                }
-                finishSafely()
-            } else {
-                // Nothing could be fetched from ANY source — the user genuinely
-                // has no path to the sources right now. Show the error, but STILL
-                // start the background engine so that the moment the (unstable
-                // Iranian) connection recovers, configs start arriving without the
-                // user having to tap Auto Test again.
-                runCatching { AutoTestEngine.start(applicationContext) }
-                runOnUiThread {
-                    if (!isFinishing) {
-                        animateBarTo(100)
-                        percent.text = "100%"
-                        toast(getString(R.string.probe_error))
+            // v6.0 — auto-ping the freshly-added batch so working configs sort to
+            // the top the instant the user lands back on My Configs.
+            if (addedCount > 0) {
+                runCatching {
+                    val list = ConfigStore(applicationContext).getServers()
+                    if (list.isNotEmpty()) {
+                        PingService.pingAll(applicationContext, list, PingStore.MY)
                     }
                 }
-                kotlinx.coroutines.delay(1_400)
-                finishSafely()
+                runOnUiThread { toast(getString(R.string.probe_saved, addedCount)) }
             }
+            finishSafely()
         }
     }
 

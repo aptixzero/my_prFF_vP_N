@@ -144,9 +144,40 @@ object AutoTestEngine {
 
     val isRunning: Boolean get() = job?.isActive == true
 
+    /**
+     * v6.0 — RE-ENTRANCY GUARD. Every mutation of [job] (start / stop / restart)
+     * goes through this monitor so two rapid Auto-Test presses (open page, back
+     * out, open again) can never leave two loops running or wedge the engine in a
+     * half-stopped state — the reported "after a couple of tries it stops adding
+     * configs / gets stuck" bug. This is a plain lock, never held across suspend.
+     */
+    private val lifecycleLock = Any()
+
+    /**
+     * v6.0 — cancel any running loop and start a fresh one. Used by the Auto-Test
+     * page so pressing AUTO TEST again (even mid-run) always kicks off a brand-new
+     * search+add cycle instead of getting stuck. The old job is cancelled first so
+     * there is never more than one loop alive.
+     */
+    fun restart(ctx: Context) {
+        synchronized(lifecycleLock) {
+            job?.cancel()
+            job = null
+        }
+        start(ctx)
+    }
+
     /** Start the continuous loop. No-op if already running. */
     fun start(ctx: Context) {
-        if (isRunning) return
+        synchronized(lifecycleLock) {
+            if (isRunning) return
+            val appCtx0 = ctx.applicationContext
+            startLocked(appCtx0)
+        }
+    }
+
+    /** Actually build + launch the loop. MUST be called while holding the lock. */
+    private fun startLocked(ctx: Context) {
         val appCtx = ctx.applicationContext
         // v5.6 — remember Auto Test is ON so it survives a process kill (long
         // screen-off session). NeonApp re-arms it on next launch if still set.
@@ -365,8 +396,10 @@ object AutoTestEngine {
 
     /** Stop the loop (CANCEL button). */
     fun stop() {
-        job?.cancel()
-        job = null
+        synchronized(lifecycleLock) {
+            job?.cancel()
+            job = null
+        }
         updateProgress { it.copy(running = false, phase = "Stopped") }
         // v4.2 — drop the "Auto Test is ON" banner the moment the user cancels.
         runCatching {
