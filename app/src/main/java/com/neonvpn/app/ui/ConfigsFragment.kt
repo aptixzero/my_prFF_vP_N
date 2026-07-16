@@ -8,6 +8,7 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.ImageView
+import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.fragment.app.Fragment
@@ -43,6 +44,11 @@ class ConfigsFragment : Fragment() {
     private lateinit var btnDeleteSel: TextView
     private lateinit var btnPingAll: TextView
 
+    /** v6.2 — top sweep progress bar (Pinging… x/y). Shown only during a sweep. */
+    private lateinit var sweepBox: View
+    private lateinit var sweepBar: ProgressBar
+    private lateinit var sweepLabel: TextView
+
     /** v5.9 — true while a manual PING ALL sweep is running (pins healthy top). */
     @Volatile private var pingAllInFlight = false
 
@@ -58,6 +64,9 @@ class ConfigsFragment : Fragment() {
         btnCopySel = view.findViewById(R.id.btn_copy_sel)
         btnDeleteSel = view.findViewById(R.id.btn_delete_sel)
         btnPingAll = view.findViewById(R.id.btn_ping_all)
+        sweepBox = view.findViewById(R.id.sweep_box)
+        sweepBar = view.findViewById(R.id.sweep_progress)
+        sweepLabel = view.findViewById(R.id.sweep_label)
 
         val recycler = view.findViewById<RecyclerView>(R.id.recycler)
         recycler.layoutManager = LinearLayoutManager(requireContext())
@@ -75,6 +84,7 @@ class ConfigsFragment : Fragment() {
         // its single StateFlow so results stay live across tab switches.
         PingService.hydrate(requireContext(), PingStore.MY)
         observePingStatuses()
+        observeSweep()
         // v5.9 — reflect the continuous Auto-Test engine LIVE in My Configs so the
         // user watches working configs accumulate here (throttled), while staying
         // pinned to the top where the healthy servers are.
@@ -88,6 +98,44 @@ class ConfigsFragment : Fragment() {
         btnPingAll.setOnClickListener { pingAll() }
 
         refresh()
+    }
+
+    /**
+     * v6.2 — OBSERVE the app-scoped sweep state. While a PING ALL sweep is
+     * running we SHOW the top progress bar and DISABLE the PING ALL + SELECT +
+     * per-row PING controls so rapid taps can't stack sweeps (the reported
+     * "ping keeps stacking and the app freezes" bug). The moment the sweep
+     * completes the bar hides and the buttons re-enable. This is the single
+     * source of truth that pins the buttons' enabled state, so re-subscribing
+     * after a tab switch reads the live truth (a sweep running on another tab
+     * keeps the buttons disabled here too).
+     */
+    private fun observeSweep() {
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                PingService.sweep.collect { s ->
+                    if (!isAdded) return@collect
+                    if (s.running) {
+                        sweepBox.visibility = View.VISIBLE
+                        sweepBar.max = s.total.coerceAtLeast(1)
+                        sweepBar.progress = s.tested
+                        sweepLabel.text = "Pinging… ${s.tested}/${s.total}"
+                        btnPingAll.isEnabled = false
+                        btnPingAll.alpha = 0.4f
+                        btnSelectMode.isEnabled = false
+                        btnSelectMode.alpha = 0.4f
+                        adapter.pingButtonsEnabled = false
+                    } else {
+                        sweepBox.visibility = View.GONE
+                        btnPingAll.isEnabled = true
+                        btnPingAll.alpha = 1f
+                        btnSelectMode.isEnabled = true
+                        btnSelectMode.alpha = 1f
+                        adapter.pingButtonsEnabled = true
+                    }
+                }
+            }
+        }
     }
 
     /**
@@ -305,6 +353,7 @@ class ConfigsFragment : Fragment() {
 
     private fun pingAll() {
         if (adapter.items.isEmpty()) return
+        if (PingService.isSweepRunning) return   // buttons are disabled, but guard
         val started = PingService.pingAll(requireContext(), adapter.items.toList(), PingStore.MY)
         if (started) {
             toast(getString(R.string.testing_ping))
@@ -315,13 +364,11 @@ class ConfigsFragment : Fragment() {
             // will pin as they succeed.
             scrollToTop()
             viewLifecycleOwner.lifecycleScope.launch {
-                val keys = adapter.items.map { ConfigParser.pingKey(it) }
-                while (isResumedSafe()) {
-                    val map = PingService.statuses.value
-                    val anyTesting = keys.any { map[it] == PingStatus.Testing }
-                    val allSeen = keys.all { map[it] != null }
-                    if (!anyTesting && allSeen) break
-                    kotlinx.coroutines.delay(300)
+                // Wait until the app-scoped sweep reports it is DONE. The sweep
+                // state is the single source of truth (it flips running=false the
+                // instant all probes resolve), so this loop is exact, not a guess.
+                while (isResumedSafe() && PingService.isSweepRunning) {
+                    kotlinx.coroutines.delay(250)
                 }
                 pingAllInFlight = false
                 if (::adapter.isInitialized && isAdded) {
@@ -391,6 +438,15 @@ class ServerAdapter(
 
     var selectMode: Boolean = false
     val checked = mutableSetOf<String>()
+
+    // v6.2 — when false (a PING ALL sweep is running on this tab), the per-row
+    // PING icon buttons are disabled so a spam-tap can't stack single probes on
+    // top of the running sweep.
+    var pingButtonsEnabled: Boolean = true
+        set(value) {
+            field = value
+            runCatching { notifyDataSetChanged() }
+        }
 
     // v3.8 §4.4 — live ping statuses pushed from PingService.statuses.
     var statuses: Map<String, PingStatus> = emptyMap()
@@ -546,10 +602,15 @@ class ServerAdapter(
         holder.badge.text = cfg.protocol.uppercase()
 
         // ping result text (never reveal host/IP to protect the config)
+        // v6.2 — the per-row detail uses ENGLISH status text ("Pinging…" while a
+        // probe is in flight, the measured ms once it lands, "unreachable" if it
+        // fails) so it matches the brief exactly. The old ping is cleared the
+        // instant a new ping starts (see PingService), so a fresh ping always
+        // replaces the stale value instead of sitting on top of it.
         val status = statuses[ConfigParser.pingKey(cfg)] ?: PingStatus.Idle
         holder.detail.text = when (status) {
             PingStatus.Idle -> "tap PING to test"
-            PingStatus.Testing -> "testing…"
+            PingStatus.Testing -> "Pinging…"
             PingStatus.Unreachable -> "✕ unreachable"
             is PingStatus.Unstable -> "● ${Format.ping(status.ms)} (unstable)"
             is PingStatus.Reachable -> "● ${Format.ping(status.ms)}"
@@ -575,6 +636,12 @@ class ServerAdapter(
         holder.card.setOnClickListener { onSelect(cfg) }
         holder.delete.setOnClickListener { onDelete(cfg) }
         holder.copy.setOnClickListener { onCopy(cfg) }
-        holder.ping.setOnClickListener { onPing(cfg, holder.bindingAdapterPosition) }
+        // v6.2 — disable the per-row PING icon while a sweep is running so taps
+        // can't stack single probes on top of the in-flight PING ALL.
+        holder.ping.isEnabled = pingButtonsEnabled
+        holder.ping.alpha = if (pingButtonsEnabled) 1f else 0.4f
+        holder.ping.setOnClickListener {
+            if (pingButtonsEnabled) onPing(cfg, holder.bindingAdapterPosition)
+        }
     }
 }

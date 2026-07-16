@@ -125,6 +125,7 @@ class FreeConfigsFragment : Fragment() {
 
         PingService.hydrate(requireContext(), PingStore.FREE)
         observePingStatuses()
+        observeSweep()
         observeAutoTest()
 
         btnSearch.setOnClickListener { onSearchClicked() }
@@ -148,6 +149,52 @@ class FreeConfigsFragment : Fragment() {
         // tab, START SEARCH, screen off/on and relaunch must NEVER start a ping
         // sweep on their own, and must NEVER clear existing results. The persisted
         // (content-keyed) results are simply re-rendered.
+    }
+
+    /**
+     * v6.2 — OBSERVE the app-scoped sweep state. While a PING ALL sweep is
+     * running we SHOW the top progress bar (Pinging… x/y) and DISABLE the PING
+     * ALL / SEARCH / SELECT / DELETE ALL / per-row PING controls so rapid taps
+     * can't stack sweeps (the reported "ping keeps stacking and the app
+     * freezes" bug). The moment the sweep completes the bar hides and the
+     * buttons re-enable. The sweep runs on the app scope, so even after a tab
+     * switch the buttons stay disabled until the sweep actually finishes.
+     */
+    private fun observeSweep() {
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                PingService.sweep.collect { s ->
+                    if (!isAdded) return@collect
+                    if (s.running) {
+                        showProgress(
+                            if (s.total > 0) (s.tested * 100 / s.total) else 0,
+                            "Pinging… ${s.tested}/${s.total}"
+                        )
+                        btnPingAll.isEnabled = false
+                        btnPingAll.alpha = 0.4f
+                        btnSearch.isEnabled = false
+                        btnSearch.alpha = 0.4f
+                        btnSelect.isEnabled = false
+                        btnSelect.alpha = 0.4f
+                        btnDeleteAll.isEnabled = false
+                        btnDeleteAll.alpha = 0.4f
+                        adapter.pingButtonsEnabled = false
+                    } else {
+                        // Don't clobber an in-flight Auto-Test progress display.
+                        if (!AutoTestEngine.isRunning) hideProgressDelayed()
+                        btnPingAll.isEnabled = true
+                        btnPingAll.alpha = 1f
+                        btnSearch.isEnabled = true
+                        btnSearch.alpha = 1f
+                        btnSelect.isEnabled = true
+                        btnSelect.alpha = 1f
+                        btnDeleteAll.isEnabled = true
+                        btnDeleteAll.alpha = 1f
+                        adapter.pingButtonsEnabled = true
+                    }
+                }
+            }
+        }
     }
 
     override fun onDestroyView() {
@@ -366,6 +413,7 @@ class FreeConfigsFragment : Fragment() {
     // ------------------------------------------------------------- ping all
     private fun pingAll() {
         if (busy || AutoTestEngine.isRunning) return
+        if (PingService.isSweepRunning) return   // buttons are disabled, but guard
         if (adapter.items.isEmpty()) { toast(getString(R.string.free_empty)); return }
 
         val started = PingService.pingAll(requireContext(), adapter.items.toList(), PingStore.FREE)
@@ -375,20 +423,11 @@ class FreeConfigsFragment : Fragment() {
         // v5.9 — pin healthy configs to the top live and keep the user at the top.
         pingAllInFlight = true
         scrollToTop()
-        val total = adapter.items.size
-        showProgress(0, getString(R.string.testing_ping))
+        showProgress(0, "Pinging… 0/${adapter.items.size}")
         job = viewLifecycleOwner.lifecycleScope.launch {
-            while (isActive && isAdded) {
-                val map = PingService.statuses.value
-                val done = adapter.items.count {
-                    val s = map[ConfigParser.pingKey(it)]
-                    s != null && s != PingService.PingStatus.Testing
-                }
-                showProgress(done * 100 / total.coerceAtLeast(1), "Tested ${done.coerceAtMost(total)}/$total")
-                val anyTesting = adapter.items.any {
-                    map[ConfigParser.pingKey(it)] == PingService.PingStatus.Testing
-                }
-                if (!anyTesting && done >= total) break
+            // The app-scoped sweep state is the single source of truth: it flips
+            // running=false the moment all probes resolve. We just wait for it.
+            while (isActive && isAdded && PingService.isSweepRunning) {
                 kotlinx.coroutines.delay(250)
             }
             // v5.7 — sort ONCE at the end of a manual sweep (not on every tick),

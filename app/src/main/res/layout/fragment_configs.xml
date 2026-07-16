@@ -138,6 +138,34 @@
             android:focusable="true" />
     </LinearLayout>
 
+    <!-- v6.2 — PING ALL sweep progress bar (shown only while pinging) -->
+    <LinearLayout
+        android:id="@+id/sweep_box"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:layout_marginTop="12dp"
+        android:visibility="gone">
+
+        <ProgressBar
+            android:id="@+id/sweep_progress"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="8dp"
+            android:max="100"
+            android:progress="0"
+            android:progressDrawable="@drawable/neon_progress" />
+
+        <TextView
+            android:id="@+id/sweep_label"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text=""
+            android:textColor="?attr/appTextSecondary"
+            android:textSize="11sp" />
+    </LinearLayout>
+
     <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"

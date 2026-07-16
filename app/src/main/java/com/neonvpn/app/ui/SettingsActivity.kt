@@ -3,11 +3,8 @@ package com.neonvpn.app.ui
 import android.os.Bundle
 import android.view.View
 import android.widget.TextView
-import android.widget.Toast
-import androidx.appcompat.widget.SwitchCompat
 import com.neonvpn.app.BuildConfig
 import com.neonvpn.app.R
-import com.neonvpn.app.config.PasteHistoryStore
 import com.neonvpn.app.service.XrayManager
 import com.neonvpn.app.util.AppPrefs
 
@@ -16,6 +13,13 @@ import com.neonvpn.app.util.AppPrefs
  * theme (dark default / light) and the language (Persian / English). Changing
  * either recreates the activity so it applies immediately, and sets a flag so
  * MainActivity rebuilds itself when the user returns.
+ *
+ * v6.2 — the Privacy / paste-history section has been REMOVED from the UI per
+ * the brief. The paste-history feature stays enabled by default (in AppPrefs)
+ * so "Paste From Clipboard" keeps scanning the accumulated on-device history of
+ * pasted links and adding every vless/vmess it finds — it just no longer shows
+ * a toggle or a "clear paste history" button. The user never sees the privacy
+ * controls; the behaviour is always on.
  */
 class SettingsActivity : BaseActivity() {
 
@@ -40,18 +44,12 @@ class SettingsActivity : BaseActivity() {
         optLangFa.setOnClickListener { applyLanguage(AppPrefs.LANG_FA) }
         optLangEn.setOnClickListener { applyLanguage(AppPrefs.LANG_EN) }
 
-        // Privacy: opt-in paste history (v3.8). Default OFF, local-only.
-        val pasteSwitch = findViewById<SwitchCompat>(R.id.switch_paste_history)
-        pasteSwitch.isChecked = AppPrefs.isPasteHistoryEnabled(this)
-        pasteSwitch.setOnCheckedChangeListener { _, enabled ->
-            AppPrefs.setPasteHistoryEnabled(this, enabled)
-            // Turning the feature OFF must immediately wipe any stored links.
-            if (!enabled) PasteHistoryStore(this).clear()
-        }
-        findViewById<View>(R.id.btn_clear_paste_history).setOnClickListener {
-            PasteHistoryStore(this).clear()
-            Toast.makeText(this, R.string.paste_history_cleared, Toast.LENGTH_SHORT).show()
-        }
+        // v6.2 — Privacy section removed from the UI. Paste history stays ON by
+        // default (AppPrefs.isPasteHistoryEnabled defaults to true), so the
+        // clipboard-paste scan of accumulated history keeps working invisibly.
+        // We no longer bind the switch / clear button (they are gone from the
+        // layout), and we make sure the default stays enabled.
+        runCatching { AppPrefs.setPasteHistoryEnabled(this, true) }
 
         highlightSelections()
 
