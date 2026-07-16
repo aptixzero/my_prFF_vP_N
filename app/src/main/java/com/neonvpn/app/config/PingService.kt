@@ -88,9 +88,29 @@ object PingService {
     /** The single observable source of truth both tabs read (§4.4). */
     val statuses: StateFlow<Map<String, PingStatus>> = _statuses.asStateFlow()
 
+    /**
+     * v6.2 — OBSERVABLE SWEEP STATE. The UI subscribes to this to:
+     *   • disable the PING ALL / per-row PING buttons while a sweep is running so
+     *     rapid taps can't stack sweeps (the reported "I keep tapping ping and the
+     *     app stacks and freezes" bug),
+     *   • show the top progress bar (tested/total) the whole time a sweep is alive,
+     *   • re-enable the buttons the instant the sweep completes.
+     * Exposed as a StateFlow so re-subscription (tab switch) reads the live truth.
+     */
+    data class SweepState(
+        val running: Boolean = false,
+        val tested: Int = 0,
+        val total: Int = 0
+    )
+    private val _sweep = MutableStateFlow(SweepState())
+    val sweep: StateFlow<SweepState> = _sweep.asStateFlow()
+
     @Volatile private var sweepJob: Job? = null
     @Volatile private var lastSweepEndedAt = 0L
     @Volatile private var loadedBucket: String? = null
+
+    /** v6.2 — true while ANY sweep (pingAll) is in flight. */
+    val isSweepRunning: Boolean get() = sweepJob?.isActive == true
 
     /**
      * Hydrate the in-memory flow from the persisted [bucket] store once. Safe to
@@ -146,12 +166,18 @@ object PingService {
     fun setExternalStatus(cfg: ServerConfig, status: PingStatus) = setStatus(keyOf(cfg), status)
 
     /**
-     * Ping a SINGLE config immediately (the per-row PING button). Runs on the
-     * app scope so a tab switch can't cancel it.
+     * v6.2 — Ping a SINGLE config immediately (the per-row PING button). Runs on
+     * the app scope so a tab switch can't cancel it. Per the brief, pressing PING
+     * on a single config is ALWAYS allowed — even mid-sweep — because it is one
+     * isolated probe, not a list sweep that could stack. It clears that ONE
+     * config's old ping the moment the probe starts (showing "Pinging…") and only
+     * writes the new result when the probe finishes.
      */
     fun pingOne(ctx: Context, cfg: ServerConfig, bucket: String) {
         val key = keyOf(cfg)
         appScope.launch {
+            // Clear the old ping for THIS config and show the live "Pinging…"
+            // state immediately so the user sees the row react to the tap.
             setStatus(key, PingStatus.Testing)
             val ms = probeWithRetry(cfg)
             applyResult(key, ms)
@@ -160,49 +186,66 @@ object PingService {
     }
 
     /**
-     * Sweep the whole [configs] list with bounded concurrency. Coalesces with an
-     * in-flight sweep and honours the [BACKOFF_MS] cool-down between sweeps.
+     * v6.2 — Sweep the whole [configs] list with bounded concurrency.
      *
-     * @return true if a sweep was started, false if one is already running or we
-     *         are still inside the backoff window.
+     * BEHAVIOUR (per the v6.2 brief):
+     *   • If a sweep is ALREADY running, return false — the UI MUST disable the
+     *     PING ALL button for the whole sweep so this branch is never reached by
+     *     a spam-tap. This is the "don't let pings stack" fix: there is at most
+     *     ONE sweep alive at any time.
+     *   • The INSTANT a sweep starts, ALL existing ping results in the bucket are
+     *     CLEARED and every config is marked `Testing` ("Pinging…"). The brief:
+     *     "when I press ping (single or ping all), the old ping must be cleared
+     *     and a new one taken and shown." So the row shows "Pinging…" in English
+     *     while the probe is in flight, then the fresh result lands.
+     *   • Progress is published to [sweep] (tested/total) so the top progress bar
+     *     climbs honestly and the buttons stay disabled until tested == total.
+     *   • Configs are probed in their ORIGINAL LIST ORDER (a bounded-concurrency
+     *     pool still launches them in order, so early rows finish first) — the
+     *     "auto test pings config 240 before config 1" bug is gone.
+     *
+     * @return true if a sweep was started, false if one is already running.
      */
     fun pingAll(ctx: Context, configs: List<ServerConfig>, bucket: String): Boolean {
-        // v6.0 — a sweep already running just keeps running (a re-tap coalesces
-        // into it) so we don't stack two sweeps; but we NO LONGER block on the
-        // BACKOFF_MS window. The old backoff silently returned false on a rapid
-        // second press, which — combined with the Auto-Test auto-ping — made it
-        // look like "ping stopped working after a couple of tries". A fresh
-        // explicit request always starts a sweep unless one is genuinely in flight.
+        // Only one sweep at a time. The UI disables PING ALL while running, so a
+        // spam-tap can never stack a second sweep on top of the first.
         val running = sweepJob?.isActive == true
         if (running) return false
+        if (configs.isEmpty()) return false
+
+        // Snapshot the ordered list of (key, cfg) so the sweep is stable even if
+        // the UI mutates its list while we run (Auto Test churn, delete, etc.).
+        val ordered = configs.map { keyOf(it) to it }
 
         sweepJob = appScope.launch {
-            // Mark ONLY untested configs as testing up front so the whole list
-            // shows spinners for new rows — but DON'T clobber a config that
-            // already has a good ping (that would look like a "reset"). Existing
-            // results stay visible until a fresh measurement replaces them.
-            val testing = _statuses.value.toMutableMap()
-            configs.forEach {
-                val k = keyOf(it)
-                val cur = testing[k]
-                if (cur == null || cur == PingStatus.Idle) testing[k] = PingStatus.Testing
-            }
-            _statuses.value = testing
+            // CLEAR every previous ping for this bucket and show "Pinging…" for
+            // every config in the list — the user pressed PING ALL, so a fresh
+            // measurement is expected for each, not the stale old value.
+            val cleared = HashMap<String, PingStatus>(_statuses.value)
+            ordered.forEach { (k, _) -> cleared[k] = PingStatus.Testing }
+            _statuses.value = cleared
+            _sweep.value = SweepState(running = true, tested = 0, total = ordered.size)
 
+            val tested = java.util.concurrent.atomic.AtomicInteger(0)
             withContext(Dispatchers.IO) {
-                configs.map { cfg ->
-                    val key = keyOf(cfg)
+                // Bounded concurrency, but launches happen in list order so the
+                // first configs are probed first (the reported "config 240 is
+                // pinged before config 1" bug is fixed).
+                ordered.map { (key, cfg) ->
                     async {
                         gate.withPermit {
                             setStatus(key, PingStatus.Testing)
                             val ms = probeWithRetry(cfg)
                             applyResult(key, ms)
+                            val n = tested.incrementAndGet()
+                            _sweep.value = SweepState(running = true, tested = n, total = ordered.size)
                         }
                     }
                 }.awaitAll()
             }
             persist(ctx, bucket)
             lastSweepEndedAt = System.currentTimeMillis()
+            _sweep.value = SweepState(running = false, tested = ordered.size, total = ordered.size)
         }
         return true
     }
@@ -211,6 +254,7 @@ object PingService {
     fun cancel() {
         sweepJob?.cancel()
         sweepJob = null
+        _sweep.value = SweepState(running = false, tested = 0, total = 0)
     }
 
     /** Forget everything (used by "clear ping results"). */

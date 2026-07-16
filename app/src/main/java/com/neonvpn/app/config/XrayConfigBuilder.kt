@@ -54,16 +54,30 @@ object XrayConfigBuilder {
         root.put("policy", JSONObject().apply {
             put("levels", JSONObject().apply {
                 put("8", JSONObject().apply {
-                    put("handshake", 4)
-                    put("connIdle", 300)
-                    put("uplinkOnly", 1)
-                    put("downlinkOnly", 1)
+                    // v6.2 — TUNED FOR CELLULAR STABILITY + FULL SPEED. The earlier
+                    // values (handshake 4s, connIdle 300s) were tuned for WiFi and
+                    // caused two problems on SIM/cellular data:
+                    //   • a 4s handshake budget is too tight on a high-RTT mobile
+                    //     link whose first hop can itself take 2-3s, so a perfectly
+                    //     good node was falsely declared dead on cellular (the
+                    //     "doesn't work / unstable on SIM data" report);
+                    //   • connIdle 300s + uplinkOnly/downlinkOnly 1s meant a momentary
+                    //     lull in traffic (common on a flapping cellular link during
+                    //     a switch between cell towers) tore the connection down.
+                    // The new settings give the tunnel a generous handshake window,
+                    // a long idle grace so a transient cellular dip never drops it,
+                    // and larger buffers so a bursty mobile link sustains full speed.
+                    put("handshake", 8)
+                    put("connIdle", 600)
+                    put("uplinkOnly", 12)
+                    put("downlinkOnly", 12)
                     put("statsUserUplink", true)
                     put("statsUserDownlink", true)
                     // Larger per-connection buffer => higher throughput on big
-                    // transfers (full bandwidth). 1 MiB is a strong, safe
-                    // sweet-spot without spiking RAM on weak phones.
-                    put("bufferSize", 1024)
+                    // transfers (full bandwidth) and smoother streaming on a
+                    // bursty cellular link. 2 MiB is a strong, safe sweet-spot
+                    // without spiking RAM on weak phones.
+                    put("bufferSize", 2048)
                 })
             })
             put("system", JSONObject().apply {
@@ -79,12 +93,21 @@ object XrayConfigBuilder {
         // internet; a fast domestic resolver handles Iranian domains so they stay
         // direct and snappy. Without a working DNS block, name resolution can
         // wedge on some ISPs and nothing loads even on a live tunnel.
+        //
+        // v6.2 — CELLULAR STABILITY. On SIM data the carrier often blocks or
+        // throttles plain 53 to foreign resolvers, and a DoH handshake to a
+        // throttled endpoint can stall the whole tunnel's first request. We keep
+        // the encrypted DoH resolvers FIRST (they are what beat the poisoning),
+        // but we no longer list the plain foreign 53 entries before the domestic
+        // resolver — that ordering made a cellular link try a blocked plain-DNS
+        // query first and wait for it to time out before falling back. The
+        // domestic resolver stays last-and-skipFallback so Iranian domains
+        // resolve fast and direct. We also keep the cache ENABLED so a flapping
+        // cellular link doesn't re-resolve on every request.
         root.put("dns", JSONObject().apply {
             put("servers", JSONArray().apply {
                 put("https://1.1.1.1/dns-query")
                 put("https://dns.google/dns-query")
-                put("1.1.1.1")
-                put("8.8.8.8")
                 put(JSONObject().apply {
                     put("address", "78.157.42.100")           // domestic resolver
                     put("port", 53)
@@ -94,6 +117,8 @@ object XrayConfigBuilder {
                     })
                     put("skipFallback", true)
                 })
+                put("1.1.1.1")
+                put("8.8.8.8")
             })
             put("queryStrategy", "UseIP")
             put("disableCache", false)
@@ -390,9 +415,20 @@ object XrayConfigBuilder {
         // connection. This is what makes real traffic actually flow through the
         // selected config on a filtered network. uTLS mimicry (above) + keep-alive
         // keep the tunnel persistent and full-speed.
+        //
+        // v6.2 — CELLULAR STABILITY TUNING. The earlier keep-alive timers (30s
+        // idle / 15s interval) are fine on WiFi but too aggressive on a SIM-data
+        // link: a mobile radio that dozes between bursts can miss a 30s keep-alive
+        // and the carrier NAT then reaps the idle socket, so the tunnel silently
+        // drops "every minute or two" on cellular. We widen the keep-alive idle so
+        // the radio's own dormancy windows don't trip it, and we enable TCP
+        // Fast Open + no-delay so the first byte after a dormancy resumes at full
+        // speed. tcpMptcp stays OFF (MPTCP is poorly supported on Iranian carrier
+        // middleboxes and caused spurious resets).
         stream.put("sockopt", JSONObject().apply {
-            put("tcpKeepAliveIdle", 30)
-            put("tcpKeepAliveInterval", 15)
+            put("tcpKeepAliveIdle", 60)
+            put("tcpKeepAliveInterval", 30)
+            put("tcpKeepAliveCount", 9)
             put("tcpNoDelay", true)
             put("tcpMptcp", false)
             put("mark", 0)

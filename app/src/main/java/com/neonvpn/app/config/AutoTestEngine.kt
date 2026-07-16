@@ -311,57 +311,74 @@ object AutoTestEngine {
                 val workingThisBatch = java.util.concurrent.ConcurrentLinkedQueue<ServerConfig>()
                 val tested = AtomicInteger(0)
 
+                // v6.2 — SEQUENTIAL ORDER. The brief: configs MUST be tested in
+                // order (config 1 first, then 2, … then 240), and the order they
+                // were added in must be preserved. The old code launched all
+                // probes concurrently, so on a fast link the LAST configs (whose
+                // async happened to be scheduled first by the dispatcher) got
+                // pinged before the FIRST ones — "config 1 added, then it pings
+                // config 240". We now probe IN LIST ORDER with a small bounded
+                // pipeline: at most [MAX_CONCURRENCY] probes in flight at once,
+                // but they are dispatched strictly in order so row N's probe
+                // starts before row N+1's. Results still land as fast as the link
+                // allows, but the visible order is 1, 2, 3, …, exactly as added.
                 withContext(Dispatchers.IO + crashGuard) {
-                    fresh.map { cfg ->
-                        async {
-                            // Each test is fully isolated: a thrown probe / malformed
-                            // config can NEVER crash the batch or the loop.
-                            runCatching {
-                                gate.withPermit {
-                                    if (!isActive) return@withPermit
-                                    PingService.setExternalStatus(cfg, PingService.PingStatus.Testing)
-                                    val ms = probeWithRetry(cfg)
-                                    if (ms in 1..WORKING_MAX_MS) {
-                                        PingService.setExternalStatus(
-                                            cfg, PingService.PingStatus.Reachable(ms)
-                                        )
-                                        // v4.2 — INSTANT add: the moment a config
-                                        // pings, push it straight into My Configs.
-                                        // We don't wait for the batch/list to finish
-                                        // (FLUSH_EVERY=1 below also flushes the queue
-                                        // immediately) so the user sees working
-                                        // configs appear live, one by one.
-                                        workingThisBatch.add(cfg.copy())
-                                        val total = totalWorking.incrementAndGet()
-                                        updateProgress {
-                                            it.copy(workingFound = total, lastWorkingMs = ms)
-                                        }
-                                        runCatching {
-                                            AutoTestNotifier.show(
-                                                appCtx,
-                                                "اتو تست روشن است · $total کانفیگ سالم اضافه شد"
+                    // A tiny sliding window: we process the batch in fixed-size
+                    // chunks of MAX_CONCURRENCY, waiting for each chunk to finish
+                    // before starting the next. This guarantees in-order testing
+                    // (chunk 1 = configs 1..k, chunk 2 = configs k+1..2k, …) while
+                    // still using the full concurrency inside a chunk for speed.
+                    val chunkSize = MAX_CONCURRENCY
+                    var i = 0
+                    while (i < fresh.size && isActive) {
+                        val end = (i + chunkSize).coerceAtMost(fresh.size)
+                        val chunk = fresh.subList(i, end)
+                        chunk.map { cfg ->
+                            async {
+                                // Each test is fully isolated: a thrown probe /
+                                // malformed config can NEVER crash the batch.
+                                runCatching {
+                                    gate.withPermit {
+                                        if (!isActive) return@withPermit
+                                        PingService.setExternalStatus(cfg, PingService.PingStatus.Testing)
+                                        val ms = probeWithRetry(cfg)
+                                        if (ms in 1..WORKING_MAX_MS) {
+                                            PingService.setExternalStatus(
+                                                cfg, PingService.PingStatus.Reachable(ms)
+                                            )
+                                            // v4.2 — INSTANT add: the moment a config
+                                            // pings, push it straight into My Configs.
+                                            workingThisBatch.add(cfg.copy())
+                                            val total = totalWorking.incrementAndGet()
+                                            updateProgress {
+                                                it.copy(workingFound = total, lastWorkingMs = ms)
+                                            }
+                                            runCatching {
+                                                AutoTestNotifier.show(
+                                                    appCtx,
+                                                    "اتو تست روشن است · $total کانفیگ سالم اضافه شد"
+                                                )
+                                            }
+                                        } else {
+                                            PingService.setExternalStatus(
+                                                cfg, PingService.PingStatus.Unreachable
                                             )
                                         }
-                                    } else {
-                                        PingService.setExternalStatus(
-                                            cfg, PingService.PingStatus.Unreachable
-                                        )
                                     }
                                 }
-                            }
-                            val n = tested.incrementAndGet()
-                            updateProgress {
-                                it.copy(phase = "Testing $n/${fresh.size}", testedInBatch = n)
-                            }
+                                val n = tested.incrementAndGet()
+                                updateProgress {
+                                    it.copy(phase = "Testing $n/${fresh.size}", testedInBatch = n)
+                                }
 
-                            // ---- 3) MOVE working configs into My Configs LIVE ----
-                            // Flush every few hits so the user sees them accumulate,
-                            // but in a SINGLE guarded write (no per-config races).
-                            if (workingThisBatch.size >= FLUSH_EVERY) {
-                                flushWorking(myStore, workingThisBatch)
+                                // ---- 3) MOVE working configs into My Configs LIVE ----
+                                if (workingThisBatch.size >= FLUSH_EVERY) {
+                                    flushWorking(myStore, workingThisBatch)
+                                }
                             }
-                        }
-                    }.awaitAll()
+                        }.awaitAll()
+                        i = end
+                    }
                 }
 
                 if (!isActive) break
