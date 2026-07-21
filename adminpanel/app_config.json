@@ -1,10 +1,10 @@
 {
-  "version": 16,
+  "version": 17,
   "latestApkVersion": "5.5",
   "appLogo": {
     "url": ""
   },
-  "inAppTelegramUrl": "https://t.me/Undercity_c",
+  "inAppTelegramUrl": "https://t.me/Professor_ch",
   "contact": {
     "text": "جهت ثبت تبلیغات و استعلام قیمت بنر به آیدی زیر در تلگرام پیام دهید:",
     "telegramId": "@mx_pr",
@@ -24,7 +24,7 @@
     "enabled": true,
     "labelFa": "عضو کانال تلگرام شوید",
     "labelEn": "Join our Telegram channel",
-    "url": "https://t.me/Undercity_c"
+    "url": "https://t.me/Professor_ch"
   },
   "homeBanner": {
     "enabled": true,
@@ -39,10 +39,10 @@
     "note": "حمایت شما سرورها را پایدار و پرسرعت نگه می‌دارد",
     "items": []
   },
-  "ts": 1783322484640,
-  "lastUpdatedAt": 1783322484640,
+  "ts": 1784652789433,
+  "lastUpdatedAt": 1784652789433,
   "inAppTelegram": {
-    "url": "https://t.me/Undercity_c"
+    "url": "https://t.me/Professor_ch"
   },
   "ad": {
     "enabled": true,
