@@ -1,6 +1,6 @@
 {
-  "version": 17,
-  "latestApkVersion": "5.5",
+  "version": 18,
+  "latestApkVersion": "6.2",
   "appLogo": {
     "url": ""
   },
@@ -18,7 +18,7 @@
     "textColor": "#000000",
     "imageUrl": "https://raw.githubusercontent.com/aptixzero/PRF_VPN/main/adminpanel/media/banner_1783146541004.png?v=1783146544198",
     "action": "url",
-    "actionUrl": "https://t.me/Undercity_c"
+    "actionUrl": "https://t.me/Professor_ch"
   },
   "homeCta": {
     "enabled": true,
@@ -31,7 +31,7 @@
     "imageUrl": "https://raw.githubusercontent.com/aptixzero/PRF_VPN/main/adminpanel/media/banner_1783146541004.png?v=1783146544198",
     "text": "",
     "textColor": "#000000",
-    "url": "https://t.me/Undercity_c"
+    "url": "https://t.me/Professor_ch"
   },
   "donate": {
     "enabled": true,
@@ -39,8 +39,8 @@
     "note": "حمایت شما سرورها را پایدار و پرسرعت نگه می‌دارد",
     "items": []
   },
-  "ts": 1784652789433,
-  "lastUpdatedAt": 1784652789433,
+  "ts": 1784786812697,
+  "lastUpdatedAt": 1784786812697,
   "inAppTelegram": {
     "url": "https://t.me/Professor_ch"
   },
@@ -52,6 +52,6 @@
     "textColor": "#000000",
     "imageUrl": "https://raw.githubusercontent.com/aptixzero/PRF_VPN/main/adminpanel/media/banner_1783146541004.png?v=1783146544198",
     "action": "url",
-    "actionUrl": "https://t.me/Undercity_c"
+    "actionUrl": "https://t.me/Professor_ch"
   }
 }
