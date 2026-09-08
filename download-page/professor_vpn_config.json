@@ -1,10 +1,10 @@
 {
-  "version": 43,
-  "updated_at": "2026-09-08T05:46:00Z",
+  "version": 44,
+  "updated_at": "2026-09-08T14:10:00Z",
   "app": {
     "name": "Professor VPN",
-    "latest_version": "9.9",
-    "latest_version_code": 80,
+    "latest_version": "10",
+    "latest_version_code": 81,
     "contact": {
       "title": "پشتیبانی",
       "text": "جهت ثبت تبلیغات و استعلام قیمت بنر به آیدی زیر در تلگرام پیام دهید:",
@@ -13,6 +13,23 @@
     }
   },
   "downloads": [
+    {
+      "id": "dl_1000",
+      "version": "10",
+      "url": "https://github.com/aptixzero/my_prFF_vP_N/releases/download/v10/ProfessorVPN-v10-universal.apk",
+      "mirror_url": "https://github.com/aptixzero/my_prFF_vP_N/releases/latest/download/ProfessorVPN-v10-universal.apk",
+      "size": "58 MB",
+      "sha256": "764e60bbe942fd3fe98fe6307052a8da8314fb4dc0ad643eb8cbb56dc2325a7d",
+      "notes": "v10 — finish the 240-row batch, pin greens, tunnel IPv4+IPv6",
+      "date": "2026-09-08T14:10:00Z",
+      "changelog": [
+        "A 240-row list is walked before the next list is added",
+        "My Configs pins a green row the instant it pings",
+        "Connected now tunnels IPv4 and IPv6",
+        "AUTO uses MASTER so MPTCP cannot look connected while apps stay empty",
+        "One universal APK, same signing key as v9.9"
+      ]
+    },
     {
       "id": "dl_990",
       "version": "9.9",
