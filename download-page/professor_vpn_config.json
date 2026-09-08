@@ -1,10 +1,10 @@
 {
-  "version": 42,
-  "updated_at": "2026-09-07T21:50:00Z",
+  "version": 43,
+  "updated_at": "2026-09-08T05:46:00Z",
   "app": {
     "name": "Professor VPN",
-    "latest_version": "9.8",
-    "latest_version_code": 79,
+    "latest_version": "9.9",
+    "latest_version_code": 80,
     "contact": {
       "title": "پشتیبانی",
       "text": "جهت ثبت تبلیغات و استعلام قیمت بنر به آیدی زیر در تلگرام پیام دهید:",
@@ -13,6 +13,22 @@
     }
   },
   "downloads": [
+    {
+      "id": "dl_990",
+      "version": "9.9",
+      "url": "https://github.com/aptixzero/my_prFF_vP_N/releases/download/v9.9/ProfessorVPN-v9.9-universal.apk",
+      "mirror_url": "https://github.com/aptixzero/my_prFF_vP_N/releases/latest/download/ProfessorVPN-v9.9-universal.apk",
+      "size": "58 MB",
+      "sha256": "d0589f6987afeff309fa372d1ebf3c9b8d011ea299184371af416f15bf99c1c5",
+      "notes": "v9.9 — faster real pings; Free list no longer resets between batches",
+      "date": "2026-09-08T05:46:00Z",
+      "changelog": [
+        "List / Search ping is a real e2e answer without the 100 KB tax on every row",
+        "A later batch is merged; the on-screen snapshot cannot wipe it",
+        "Port prefilter no longer shrinks 240 configs down to 18",
+        "One universal APK, same signing key as v9.8"
+      ]
+    },
     {
       "id": "dl_980",
       "version": "9.8",
