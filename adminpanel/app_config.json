@@ -1,5 +1,5 @@
 {
-  "version": 56,
+  "version": 57,
   "latestApkVersion": "10",
   "appLogo": {
     "url": ""
@@ -75,19 +75,19 @@
     ]
   },
   "notice": {
-    "enabled": false,
+    "enabled": true,
     "title": "اعلان Professor Vpn",
-    "text": "",
-    "id": "",
-    "color": "#8a3ffc"
+    "text": "ورژن جدید برنامه منتشر شد . لطفا آپدیت کنید",
+    "id": "nhe6std",
+    "color": "#53ee00"
   },
   "qrLink": {
     "enabled": true,
     "url": "https://professorvpn.vercel.app/",
     "caption": "این بارکد را با دوربین گوشی اسکن کنید"
   },
-  "ts": 1788157698164,
-  "lastUpdatedAt": 1788157698164,
+  "ts": 1788929549393,
+  "lastUpdatedAt": 1788929549393,
   "inAppTelegram": {
     "url": "https://t.me/Professor_ch"
   },
@@ -115,11 +115,11 @@
     ]
   },
   "notification": {
-    "enabled": false,
+    "enabled": true,
     "title": "اعلان Professor Vpn",
-    "text": "",
-    "id": "",
-    "color": "#8a3ffc"
+    "text": "ورژن جدید برنامه منتشر شد . لطفا آپدیت کنید",
+    "id": "nhe6std",
+    "color": "#53ee00"
   },
   "qrcode": {
     "enabled": true,
