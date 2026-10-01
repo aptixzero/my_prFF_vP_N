@@ -1,20 +1,20 @@
 {
-  "version": 58,
+  "version": 59,
   "latestApkVersion": "10.1",
   "announcements": {
     "push": {
-      "id": "parxewrtagcp",
-      "enabled": true,
+      "id": "pas9yh8gyect",
+      "enabled": false,
       "title": "Professor VPN",
-      "text": "تست نوتیفیکیشن ۱ — فقط ورژن جدید",
+      "text": "",
       "targetNew": true,
       "targetOld": false
     },
     "inApp": {
-      "id": "iaokmpukmh0d",
-      "enabled": true,
+      "id": "idrjip7nm06r",
+      "enabled": false,
       "title": "اعلان Professor Vpn",
-      "text": "تست اعلان درون برنامه ۱ — فقط ورژن جدید",
+      "text": "",
       "color": "#8A3FFC",
       "dismissible": true,
       "targetNew": true,
@@ -97,8 +97,8 @@
   "notice": {
     "enabled": false,
     "title": "اعلان Professor Vpn",
-    "text": "تست اعلان درون برنامه ۱ — فقط ورژن جدید",
-    "id": "n1fdemnd",
+    "text": "",
+    "id": "",
     "color": "#8A3FFC"
   },
   "qrLink": {
@@ -106,8 +106,8 @@
     "url": "https://professorvpn.vercel.app/",
     "caption": "این بارکد را با دوربین گوشی اسکن کنید"
   },
-  "ts": 1790859047288,
-  "lastUpdatedAt": 1790859047288,
+  "ts": 1790866681476,
+  "lastUpdatedAt": 1790866681476,
   "inAppTelegram": {
     "url": "https://t.me/Professor_ch"
   },
@@ -137,8 +137,8 @@
   "notification": {
     "enabled": false,
     "title": "اعلان Professor Vpn",
-    "text": "تست اعلان درون برنامه ۱ — فقط ورژن جدید",
-    "id": "n1fdemnd",
+    "text": "",
+    "id": "",
     "color": "#8A3FFC"
   },
   "qrcode": {
