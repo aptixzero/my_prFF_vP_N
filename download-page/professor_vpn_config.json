@@ -1,10 +1,10 @@
 {
-  "version": 48,
-  "updated_at": "2026-10-01T20:57:28Z",
+  "version": 49,
+  "updated_at": "2026-10-01T23:40:00Z",
   "app": {
     "name": "Professor VPN",
-    "latest_version": "10.4",
-    "latest_version_code": 85,
+    "latest_version": "10.5",
+    "latest_version_code": 86,
     "contact": {
       "title": "پشتیبانی",
       "text": "جهت ثبت تبلیغات و استعلام قیمت بنر به آیدی زیر در تلگرام پیام دهید:",
@@ -13,6 +13,26 @@
     }
   },
   "downloads": [
+    {
+      "id": "dl_1050",
+      "version": "10.5",
+      "url": "https://github.com/aptixzero/my_prFF_vP_N/releases/download/v10.5/ProfessorVPN-v10.5-universal.apk",
+      "mirror_url": "https://github.com/aptixzero/my_prFF_vP_N/releases/latest/download/ProfessorVPN-v10.5-universal.apk",
+      "size": "58 MB",
+      "sha256": "1a04d57e2731eda139c3035f48d0f166465ccbfbdf0def98d62a0e93a5a26614",
+      "notes": "v10.5 — real pings on every row, and a list that keeps moving",
+      "date": "2026-10-01T23:40:00Z",
+      "changelog": [
+        "The list advances again: a finished batch is replaced by the next one (Server 1…120 → 121…240, counting up)",
+        "Nothing is marked unreachable without a real probe: the port prefilter and the socket wave no longer decide verdicts",
+        "The deep-probe cap no longer collapses on a dead-heavy batch (only real pool pressure feeds it)",
+        "The 100 KB confirmation is measured from the core's own duration — live nodes on slow links are no longer rejected",
+        "A starved probe goes back to untested instead of painting the row unreachable",
+        "The ping ladder leads with the DNS-free Cloudflare trace; AUTO never picks a Google endpoint",
+        "Bank walk: error-page fetches retried, 30-day reset re-opens every bank, drawn batches are remembered as seen",
+        "One universal APK, same signing key as v10.4"
+      ]
+    },
     {
       "id": "dl_1040",
       "version": "10.4",
