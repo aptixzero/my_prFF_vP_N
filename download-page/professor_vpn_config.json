@@ -1,10 +1,10 @@
 {
-  "version": 45,
-  "updated_at": "2026-10-01T14:26:38Z",
+  "version": 46,
+  "updated_at": "2026-10-01T16:23:06Z",
   "app": {
     "name": "Professor VPN",
-    "latest_version": "10.1",
-    "latest_version_code": 82,
+    "latest_version": "10.2",
+    "latest_version_code": 83,
     "contact": {
       "title": "پشتیبانی",
       "text": "جهت ثبت تبلیغات و استعلام قیمت بنر به آیدی زیر در تلگرام پیام دهید:",
@@ -13,6 +13,26 @@
     }
   },
   "downloads": [
+    {
+      "id": "dl_1020",
+      "version": "10.2",
+      "url": "https://github.com/aptixzero/my_prFF_vP_N/releases/download/v10.2/ProfessorVPN-v10.2-universal.apk",
+      "mirror_url": "https://github.com/aptixzero/my_prFF_vP_N/releases/latest/download/ProfessorVPN-v10.2-universal.apk",
+      "size": "58 MB",
+      "sha256": "8aeac7405480522231a562dd89945f3ed3db2596617f58c63a14ce4a50084171",
+      "notes": "v10.2 — real search: consecutive numbers, honest verdicts, sources that learn",
+      "date": "2026-10-01T16:23:06Z",
+      "changelog": [
+        "Server numbers are consecutive again (no more jumps like 36 → 3456)",
+        "A config is never marked dead by a starved or cancelled probe",
+        "An unfinished cycle keeps its rows and pings them next",
+        "The app learns which source actually works on your network",
+        "Source rotation works again; 18 duplicate feeds removed",
+        "The per-network strategy really tunes mux, fragmentation and timeouts",
+        "A picked mode keeps its own promise (GAMING stays without mux)",
+        "One universal APK, same signing key as v10.1"
+      ]
+    },
     {
       "id": "dl_1010",
       "version": "10.1",
