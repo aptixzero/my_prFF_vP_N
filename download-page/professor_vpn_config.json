@@ -1,10 +1,10 @@
 {
-  "version": 47,
-  "updated_at": "2026-10-01T18:13:37Z",
+  "version": 48,
+  "updated_at": "2026-10-01T20:57:28Z",
   "app": {
     "name": "Professor VPN",
-    "latest_version": "10.3",
-    "latest_version_code": 84,
+    "latest_version": "10.4",
+    "latest_version_code": 85,
     "contact": {
       "title": "پشتیبانی",
       "text": "جهت ثبت تبلیغات و استعلام قیمت بنر به آیدی زیر در تلگرام پیام دهید:",
@@ -13,6 +13,25 @@
     }
   },
   "downloads": [
+    {
+      "id": "dl_1040",
+      "version": "10.4",
+      "url": "https://github.com/aptixzero/my_prFF_vP_N/releases/download/v10.4/ProfessorVPN-v10.4-universal.apk",
+      "mirror_url": "https://github.com/aptixzero/my_prFF_vP_N/releases/latest/download/ProfessorVPN-v10.4-universal.apk",
+      "size": "58 MB",
+      "sha256": "bfdcd9c8d35eda3888eff3feb2c7af260a428cb3d60705b2b52ef5856f329609",
+      "notes": "v10.4 — new config banks, a real ping service, and a sweep that walks in order",
+      "date": "2026-10-01T20:57:28Z",
+      "changelog": [
+        "100 new config banks (50 VLESS + 50 VMESS) replace the old source list",
+        "120 configs per batch, from the same bank until it runs out, never repeated",
+        "Each search picks the bank by measuring your own connection",
+        "Ping service is now a setting: 8 endpoints, each with a live CHECK",
+        "CDN mirror chosen automatically (raw is filtered on many links)",
+        "The ping bar starts at 0% and the sweep starts from the first config",
+        "One universal APK, same signing key as v10.3"
+      ]
+    },
     {
       "id": "dl_1030",
       "version": "10.3",
