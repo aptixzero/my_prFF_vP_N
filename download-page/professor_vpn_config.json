@@ -1,10 +1,10 @@
 {
-  "version": 46,
-  "updated_at": "2026-10-01T16:23:06Z",
+  "version": 47,
+  "updated_at": "2026-10-01T18:13:37Z",
   "app": {
     "name": "Professor VPN",
-    "latest_version": "10.2",
-    "latest_version_code": 83,
+    "latest_version": "10.3",
+    "latest_version_code": 84,
     "contact": {
       "title": "پشتیبانی",
       "text": "جهت ثبت تبلیغات و استعلام قیمت بنر به آیدی زیر در تلگرام پیام دهید:",
@@ -13,6 +13,25 @@
     }
   },
   "downloads": [
+    {
+      "id": "dl_1030",
+      "version": "10.3",
+      "url": "https://github.com/aptixzero/my_prFF_vP_N/releases/download/v10.3/ProfessorVPN-v10.3-universal.apk",
+      "mirror_url": "https://github.com/aptixzero/my_prFF_vP_N/releases/latest/download/ProfessorVPN-v10.3-universal.apk",
+      "size": "58 MB",
+      "sha256": "93da577e0134f83be42a39a5fed1d261e952b898363d69ed66974c64f7564868",
+      "notes": "v10.3 — every config shows its verdict, live; pings work again",
+      "date": "2026-10-01T18:13:37Z",
+      "changelog": [
+        "The v10.2 regression that made every ping fail is fixed (no mux in the measurement)",
+        "Every row shows a live verdict: green pinned on top, red at the bottom",
+        "The counter counts the whole batch (no more 0/11 against 36 rows)",
+        "A batch is 120 configs: 60 VLESS + 60 VMESS",
+        "No more rows stuck on 'Pinging…'; unfinished rows are re-probed",
+        "A green config is pinned in the Free list and added to My Configs",
+        "One universal APK, same signing key as v10.2"
+      ]
+    },
     {
       "id": "dl_1020",
       "version": "10.2",
