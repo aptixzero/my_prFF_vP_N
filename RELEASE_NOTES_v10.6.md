@@ -80,5 +80,20 @@ configs, showed "Pinging…" for hours, and never said WHY a config failed.
   tab's PING ALL is disabled while the automatic sweep is running (they share
   one status map).
 
+### Accuracy follow-ups from the review round
+
+- The forwarded gate failure keeps its real cause: a refused connection and a
+  DNS failure are no longer reported as "no TCP answer".
+- A pool-pressure verdict is no longer retried immediately behind the same
+  saturated pool (it is carried instead), and the confirmation's wall covers
+  the pool's queue just like the first-answer wall does.
+- The measured tuning is keyed to the network it was measured on, so a
+  Wi-Fi-derived width never silently applies after a switch to cellular.
+- The Free list's tap is honoured end to end: the last tap wins, a row that
+  could not be stored is not selected, and the toast says so instead of
+  claiming success.
+- The manual sweep's counter counts verdicts (not attempts), its cleanup only
+  touches its own rows, and stale reasons are pruned with their statuses.
+
 versionCode 87 / versionName 10.6. Same signing key as v10.4/v10.5, so it
 installs over the existing app.
