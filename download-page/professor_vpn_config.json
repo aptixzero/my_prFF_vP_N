@@ -19,7 +19,7 @@
       "url": "https://github.com/aptixzero/my_prFF_vP_N/releases/download/v10.5/ProfessorVPN-v10.5-universal.apk",
       "mirror_url": "https://github.com/aptixzero/my_prFF_vP_N/releases/latest/download/ProfessorVPN-v10.5-universal.apk",
       "size": "58 MB",
-      "sha256": "1a04d57e2731eda139c3035f48d0f166465ccbfbdf0def98d62a0e93a5a26614",
+      "sha256": "81eae100487d16f47168dd928c1b4772c72334ff267cf6e2a91db343cd7d2923",
       "notes": "v10.5 — real pings on every row, and a list that keeps moving",
       "date": "2026-10-01T23:40:00Z",
       "changelog": [
@@ -30,7 +30,9 @@
         "A starved probe goes back to untested instead of painting the row unreachable",
         "The ping ladder leads with the DNS-free Cloudflare trace; AUTO never picks a Google endpoint",
         "Bank walk: error-page fetches retried, 30-day reset re-opens every bank, drawn batches are remembered as seen",
-        "One universal APK, same signing key as v10.4"
+        "One universal APK, same signing key as v10.4",
+        "Deleting a config from the list now sticks (the delete write used to re-add it)",
+        "A slow, partial batch is merged instead of replacing the list"
       ]
     },
     {

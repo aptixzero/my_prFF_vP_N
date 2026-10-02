@@ -52,6 +52,15 @@
   is retried instead of being retired for ever; the 30-day reset re-opens every
   bank; and a batch is remembered as seen the moment it is drawn, so a config
   can never come back under a second name after a restart.
+- **The list always moves on.** The untested backlog is consumed as it is walked
+  (it used to be re-carried for ever, which stopped new batches from ever being
+  drawn), a slow partial batch is merged instead of replacing the list, and a
+  rotation never runs while the app has no status information to protect.
+- **Deleting a config from the list now sticks.** The delete write used to union
+  the row back in, so a deleted config reappeared on the next reload.
+- **A green row stays green across a restart.** When the confirmation could not
+  produce its own verdict, the sweep keeps the earlier real answer — and now
+  persists it, so the row no longer comes back as "unreachable" after a restart.
 
 versionCode 86 / versionName 10.5. Same signing key as v10.4, so it installs
 over the existing app.
