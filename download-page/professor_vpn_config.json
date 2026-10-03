@@ -1,10 +1,10 @@
 {
-  "version": 59,
-  "updated_at": "2026-10-03T20:50:00Z",
+  "version": 60,
+  "updated_at": "2026-10-03T21:15:00Z",
   "app": {
     "name": "Professor VPN",
-    "latest_version": "11.4",
-    "latest_version_code": 95,
+    "latest_version": "11.5",
+    "latest_version_code": 96,
     "contact": {
       "title": "پشتیبانی",
       "text": "جهت ثبت تبلیغات و استعلام قیمت بنر به آیدی زیر در تلگرام پیام دهید:",
@@ -13,6 +13,22 @@
     }
   },
   "downloads": [
+    {
+      "id": "dl_1150",
+      "version": "11.5",
+      "url": "https://github.com/aptixzero/my_prFF_vP_N/releases/download/v11.5/ProfessorVPN-v11.5-universal.apk",
+      "mirror_url": "https://github.com/aptixzero/my_prFF_vP_N/releases/latest/download/ProfessorVPN-v11.5-universal.apk",
+      "size": "58 MB",
+      "sha256": "6fd21b3e546e900e9168280f8c20f8c087f54b5d8d335ac623b3d526e6233029",
+      "notes": "v11.5 — URLTest: three proxy requests, median, stability",
+      "date": "2026-10-03T21:15:00Z",
+      "changelog": [
+        "Ping is an HTTPS request through the proxy, not a ping of the server IP",
+        "Each config gets 3 fresh attempts; the number is the median",
+        "3/3 Available, 1/3 or 2/3 Unstable, 0/3 Unreachable",
+        "Still 120 configs at a time"
+      ]
+    },
     {
       "id": "dl_1140",
       "version": "11.4",
