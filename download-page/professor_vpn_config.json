@@ -1,10 +1,10 @@
 {
-  "version": 57,
-  "updated_at": "2026-10-03T18:50:00Z",
+  "version": 58,
+  "updated_at": "2026-10-03T19:20:00Z",
   "app": {
     "name": "Professor VPN",
-    "latest_version": "11.2",
-    "latest_version_code": 93,
+    "latest_version": "11.3",
+    "latest_version_code": 94,
     "contact": {
       "title": "پشتیبانی",
       "text": "جهت ثبت تبلیغات و استعلام قیمت بنر به آیدی زیر در تلگرام پیام دهید:",
@@ -13,6 +13,22 @@
     }
   },
   "downloads": [
+    {
+      "id": "dl_1130",
+      "version": "11.3",
+      "url": "https://github.com/aptixzero/my_prFF_vP_N/releases/download/v11.3/ProfessorVPN-v11.3-universal.apk",
+      "mirror_url": "https://github.com/aptixzero/my_prFF_vP_N/releases/latest/download/ProfessorVPN-v11.3-universal.apk",
+      "size": "58 MB",
+      "sha256": "28e903c1a50fc742118e43c620cff68caf75a806822f5727caac2d1df7cd0b27",
+      "notes": "v11.3 — ping starts with the list, a hung core cannot freeze the sweep",
+      "date": "2026-10-03T19:20:00Z",
+      "changelog": [
+        "Configs download first; network analysis no longer blocks the list",
+        "The ping starts when the rows appear — the bar leaves 0 as soon as a row is picked up",
+        "A hung core call is abandoned after 5 seconds, so one stall cannot freeze the sweep",
+        "The probe host is pinned, so the first ping does not wait on device DNS"
+      ]
+    },
     {
       "id": "dl_1120",
       "version": "11.2",
