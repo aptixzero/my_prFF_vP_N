@@ -1,10 +1,10 @@
 {
-  "version": 54,
-  "updated_at": "2026-10-03T13:45:00Z",
+  "version": 55,
+  "updated_at": "2026-10-03T15:21:00Z",
   "app": {
     "name": "Professor VPN",
-    "latest_version": "10.9",
-    "latest_version_code": 90,
+    "latest_version": "11.0",
+    "latest_version_code": 91,
     "contact": {
       "title": "پشتیبانی",
       "text": "جهت ثبت تبلیغات و استعلام قیمت بنر به آیدی زیر در تلگرام پیام دهید:",
@@ -13,6 +13,22 @@
     }
   },
   "downloads": [
+    {
+      "id": "dl_1100",
+      "version": "11.0",
+      "url": "https://github.com/aptixzero/my_prFF_vP_N/releases/download/v11.0/ProfessorVPN-v11.0-universal.apk",
+      "mirror_url": "https://github.com/aptixzero/my_prFF_vP_N/releases/latest/download/ProfessorVPN-v11.0-universal.apk",
+      "size": "58 MB",
+      "sha256": "7d1fd5e7c455418741667b6ceeaff02fd3e04468a4a97a8dd3b3a9dbe4eb9494",
+      "notes": "v11.0 — the strongest version: live numbers, full batches, real verdicts",
+      "date": "2026-10-03T15:21:00Z",
+      "changelog": [
+        "Connect screen reads the live tunnel flag — numbers show whenever the tunnel is up, no wipes racing the pump",
+        "Batches fill before they walk: parallel 4-bank walks per kind, corpus top-up, never below 50 rows",
+        "Heartbeat carries the tunnel flag — dashboard splits in-app live from VPN-connected live",
+        "Dashboard zero until v11 devices report; honest empty states everywhere"
+      ]
+    },
     {
       "id": "dl_1090",
       "version": "10.9",
