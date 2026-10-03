@@ -1,10 +1,10 @@
 {
-  "version": 58,
-  "updated_at": "2026-10-03T19:20:00Z",
+  "version": 59,
+  "updated_at": "2026-10-03T20:50:00Z",
   "app": {
     "name": "Professor VPN",
-    "latest_version": "11.3",
-    "latest_version_code": 94,
+    "latest_version": "11.4",
+    "latest_version_code": 95,
     "contact": {
       "title": "پشتیبانی",
       "text": "جهت ثبت تبلیغات و استعلام قیمت بنر به آیدی زیر در تلگرام پیام دهید:",
@@ -13,6 +13,22 @@
     }
   },
   "downloads": [
+    {
+      "id": "dl_1140",
+      "version": "11.4",
+      "url": "https://github.com/aptixzero/my_prFF_vP_N/releases/download/v11.4/ProfessorVPN-v11.4-universal.apk",
+      "mirror_url": "https://github.com/aptixzero/my_prFF_vP_N/releases/latest/download/ProfessorVPN-v11.4-universal.apk",
+      "size": "58 MB",
+      "sha256": "51446c2ea806ad4c4112390b6138887f1b753d9311b941583da9a5c7183d1248",
+      "notes": "v11.4 — a real ping moves the row: green to the top, no ping to the bottom",
+      "date": "2026-10-03T20:50:00Z",
+      "changelog": [
+        "START SEARCH analyses the link, sets the match, then adds 120 configs",
+        "The counter counts finished pings only",
+        "A config that pings is pinned to the top",
+        "A config that does not ping goes to the bottom"
+      ]
+    },
     {
       "id": "dl_1130",
       "version": "11.3",
