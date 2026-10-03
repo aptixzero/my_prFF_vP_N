@@ -1,10 +1,10 @@
 {
-  "version": 55,
-  "updated_at": "2026-10-03T15:21:00Z",
+  "version": 56,
+  "updated_at": "2026-10-03T18:05:00Z",
   "app": {
     "name": "Professor VPN",
-    "latest_version": "11.0",
-    "latest_version_code": 91,
+    "latest_version": "11.1",
+    "latest_version_code": 92,
     "contact": {
       "title": "پشتیبانی",
       "text": "جهت ثبت تبلیغات و استعلام قیمت بنر به آیدی زیر در تلگرام پیام دهید:",
@@ -13,6 +13,22 @@
     }
   },
   "downloads": [
+    {
+      "id": "dl_1110",
+      "version": "11.1",
+      "url": "https://github.com/aptixzero/my_prFF_vP_N/releases/download/v11.1/ProfessorVPN-v11.1-universal.apk",
+      "mirror_url": "https://github.com/aptixzero/my_prFF_vP_N/releases/latest/download/ProfessorVPN-v11.1-universal.apk",
+      "size": "58 MB",
+      "sha256": "b83aa430b5438d6a59995e90369df8cf29004a25a2c3f6620834a08593da4e00",
+      "notes": "v11.1 — the ping finally holds: screen-off keep-alive, no gaps, best bank first",
+      "date": "2026-10-03T18:05:00Z",
+      "changelog": [
+        "Screen-off network heartbeat (45s) + 3-miss link-lost hint — the sweep survives the locked screen",
+        "First-answer fast acquire (3s not 30s) — queued rows carry in seconds instead of stalling",
+        "Bank walk ranked by YOUR link's measured health (SourceRanker) — best bank first, not file order",
+        "Lossy links probe narrower but longer — no more stall-together-clip-together gaps"
+      ]
+    },
     {
       "id": "dl_1100",
       "version": "11.0",
