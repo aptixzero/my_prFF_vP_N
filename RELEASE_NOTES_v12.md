@@ -5,6 +5,8 @@
 - START SEARCH now replaces the previous Free list with one fresh generation.
 - The progress bar advances when a real worker starts and remains synchronized when its verdict lands.
 - The progress counter reads only the current sweep plan, not stale statuses from older lists.
+- Native ping calls now have a bounded process-wide ceiling, and capacity pressure stays inconclusive instead of marking servers dead.
+- Free Config rows keep a stable order during a sweep and sort once when the sweep stops or completes.
 - Search now detects the underlying Wi-Fi or cellular link while a VPN transport is active.
 - Free-list rotation removes only stale FREE measurements. My Config measurements remain intact.
 - The local Room database remains the durable store for configs, measurements, source state, and diagnostics.

@@ -21,7 +21,7 @@ The Android source, build pipeline, and signing material are maintained in priva
 `ProfessorVPN-v12-universal.apk`
 
 ```text
-SHA-256  230cbc5bd1e87637858928defa68007a306f4866abd64fd41906e4e9a61932c2
+SHA-256  e4a3722208ea75b51395c0315dd1875b42ce0cc6ac174355b635d5a304e59ad5
 ```
 
 Security reports should be sent privately to the repository owner rather than opened as public issues.
