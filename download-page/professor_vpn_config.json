@@ -1,10 +1,10 @@
 {
-  "version": 64,
-  "updated_at": "2026-10-04T16:00:00Z",
+  "version": 65,
+  "updated_at": "2026-10-04T20:27:38Z",
   "app": {
     "name": "Professor VPN",
-    "latest_version": "11.9",
-    "latest_version_code": 100,
+    "latest_version": "12",
+    "latest_version_code": 101,
     "contact": {
       "title": "پشتیبانی",
       "text": "جهت ثبت تبلیغات و استعلام قیمت بنر به آیدی زیر در تلگرام پیام دهید:",
@@ -13,6 +13,23 @@
     }
   },
   "downloads": [
+    {
+      "id": "dl_1200",
+      "version": "12",
+      "url": "https://github.com/aptixzero/my_prFF_vP_N/releases/download/v12/ProfessorVPN-v12-universal.apk",
+      "mirror_url": "https://github.com/aptixzero/my_prFF_vP_N/releases/latest/download/ProfessorVPN-v12-universal.apk",
+      "size": "58 MB",
+      "sha256": "230cbc5bd1e87637858928defa68007a306f4866abd64fd41906e4e9a61932c2",
+      "notes": "v12 — stable ping progress, fresh search generations, deterministic order",
+      "date": "2026-10-04T20:27:38Z",
+      "changelog": [
+        "Ping progress advances as soon as workers start",
+        "Native probes are bounded so repeated timeouts cannot accumulate without limit",
+        "START SEARCH replaces the previous Free list instead of appending to it",
+        "Rows keep a stable order during a sweep and after reopening the screen",
+        "Free-list cleanup preserves My Configs measurements"
+      ]
+    },
     {
       "id": "dl_1190",
       "version": "11.9",
