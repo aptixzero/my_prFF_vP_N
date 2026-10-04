@@ -1,10 +1,10 @@
 {
-  "version": 63,
-  "updated_at": "2026-10-04T13:35:00Z",
+  "version": 64,
+  "updated_at": "2026-10-04T16:00:00Z",
   "app": {
     "name": "Professor VPN",
-    "latest_version": "11.8",
-    "latest_version_code": 99,
+    "latest_version": "11.9",
+    "latest_version_code": 100,
     "contact": {
       "title": "پشتیبانی",
       "text": "جهت ثبت تبلیغات و استعلام قیمت بنر به آیدی زیر در تلگرام پیام دهید:",
@@ -13,6 +13,23 @@
     }
   },
   "downloads": [
+    {
+      "id": "dl_1190",
+      "version": "11.9",
+      "url": "https://github.com/aptixzero/my_prFF_vP_N/releases/download/v11.9/ProfessorVPN-v11.9-universal.apk",
+      "mirror_url": "https://github.com/aptixzero/my_prFF_vP_N/releases/latest/download/ProfessorVPN-v11.9-universal.apk",
+      "size": "58 MB",
+      "sha256": "24abc6bf99e65ef3b8c681864842295f0ff631d76f0d5ea750ce44f1b90c0858",
+      "notes": "v11.9 — the sweep cannot freeze: pool, verdicts, progress, rotation",
+      "date": "2026-10-04T16:00:00Z",
+      "changelog": [
+        "A hung core call leaks one thread, never a pool slot",
+        "Inconclusive rows are tracked and retried, not swallowed",
+        "A definitive miss settles at once; the fast wall is ~13 s",
+        "The bar shows rows in flight; cycle end never clears a live probe",
+        "First probe target is the official Cloudflare latency endpoint"
+      ]
+    },
     {
       "id": "dl_1180",
       "version": "11.8",
