@@ -1,0 +1,18 @@
+{
+ "version": 1,
+ "devices": {
+  "feedc0de1234": {
+   "first_seen": 1791204782103,
+   "last_seen": 1791204782103,
+   "app_version": "12.1",
+   "vpn_seen": 0,
+   "device_model": "setup-check",
+   "android_release": "14",
+   "android_sdk": 34,
+   "sessions": 0,
+   "total_sec": 0,
+   "total_up": 0,
+   "total_down": 0
+  }
+ }
+}
