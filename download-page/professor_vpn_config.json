@@ -1,10 +1,10 @@
 {
-  "version": 65,
-  "updated_at": "2026-10-04T20:27:38Z",
+  "version": 66,
+  "updated_at": "2026-10-05T03:51:42Z",
   "app": {
     "name": "Professor VPN",
-    "latest_version": "12",
-    "latest_version_code": 101,
+    "latest_version": "12.1",
+    "latest_version_code": 102,
     "contact": {
       "title": "پشتیبانی",
       "text": "جهت ثبت تبلیغات و استعلام قیمت بنر به آیدی زیر در تلگرام پیام دهید:",
@@ -13,6 +13,23 @@
     }
   },
   "downloads": [
+    {
+      "id": "dl_1210",
+      "version": "12.1",
+      "url": "https://github.com/aptixzero/my_prFF_vP_N/releases/download/v12.1/ProfessorVPN-v12.1-universal.apk",
+      "mirror_url": "https://github.com/aptixzero/my_prFF_vP_N/releases/latest/download/ProfessorVPN-v12.1-universal.apk",
+      "size": "58 MB",
+      "sha256": "1d878235fe852476296bbd0f3cd6d7cb5e337f943d73ab762a08bb4162012dba",
+      "notes": "v12.1 — one stable bounded ping sweep with durable My Config deletion",
+      "date": "2026-10-05T03:51:42Z",
+      "changelog": [
+        "START SEARCH tests one fixed Free Config list and never replaces it during ping",
+        "Ping uses bounded real probes without sleep, cooldown, or admission-time cutoff",
+        "Progress keeps one fixed total and never resets to 0/0 during a sweep",
+        "My Configs uses moderate concurrency and stays in place until ping completes",
+        "Deleted My Config rows stay deleted after restart and automatic promotion"
+      ]
+    },
     {
       "id": "dl_1200",
       "version": "12",
