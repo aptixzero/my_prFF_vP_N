@@ -1,6 +1,6 @@
 {
-  "version": 81,
-  "latestApkVersion": "12.3",
+  "version": 82,
+  "latestApkVersion": "12.4",
   "announcements": {
     "push": {
       "id": "pas9yh8gyect",
@@ -106,8 +106,8 @@
     "url": "https://professorvpn.vercel.app/",
     "caption": "این بارکد را با دوربین گوشی اسکن کنید"
   },
-  "ts": 1791217353916,
-  "lastUpdatedAt": 1791217353916,
+  "ts": 1791234593007,
+  "lastUpdatedAt": 1791234593007,
   "inAppTelegram": {
     "url": "https://t.me/Professor_ch"
   },
