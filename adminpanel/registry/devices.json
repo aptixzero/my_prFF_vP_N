@@ -26,6 +26,19 @@
    "total_sec": 0,
    "total_up": 0,
    "total_down": 0
+  },
+  "66884239102aa129": {
+   "first_seen": 1791219798559,
+   "last_seen": 1791219798559,
+   "app_version": "12.1",
+   "vpn_seen": 0,
+   "device_model": "redroid14_x86_64",
+   "android_release": "14",
+   "android_sdk": 34,
+   "sessions": 0,
+   "total_sec": 0,
+   "total_up": 0,
+   "total_down": 0
   }
  }
 }
