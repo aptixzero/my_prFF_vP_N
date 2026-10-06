@@ -1,10 +1,10 @@
 {
-  "version": 68,
-  "updated_at": "2026-10-05T21:09:53Z",
+  "version": 69,
+  "updated_at": "2026-10-06T13:17:28Z",
   "app": {
     "name": "Professor VPN",
-    "latest_version": "12.3",
-    "latest_version_code": 104,
+    "latest_version": "12.5",
+    "latest_version_code": 106,
     "contact": {
       "title": "پشتیبانی",
       "text": "جهت ثبت تبلیغات و استعلام قیمت بنر به آیدی زیر در تلگرام پیام دهید:",
@@ -13,6 +13,23 @@
     }
   },
   "downloads": [
+    {
+      "id": "dl_1231",
+      "version": "12.5",
+      "url": "https://github.com/aptixzero/my_prFF_vP_N/releases/download/v12.5/ProfessorVPN-v12.5-universal.apk",
+      "mirror_url": "https://github.com/purifasor/professor-vpn-dist/releases/download/v12.5/ProfessorVPN-v12.5-universal.apk",
+      "size": "58 MB",
+      "sha256": "80346891bf3d91946d2e7e268f8bdb18917e03b75984319446460110192b2b27",
+      "notes": "v12.5 — the auto-tuned engine: network settings measured and set automatically per link, real pings only (proxied request through the core), live pin/sink split during the sweep, 120-row batches that rotate until you stop, STOP always reachable in-app and in the notification.",
+      "changelog": [
+        "Network settings are automatic: every launch scans the link (Wi-Fi / carrier / quality / interference) and tunes the tunnel.",
+        "Real pings only: every verdict is a genuine proxied request through the Xray core to a live endpoint.",
+        "The sweep walks row 1 → N, pins green rows on top instantly, sinks dead rows with an English reason.",
+        "120-config batches rotate (121–240, 241–360, …) until YOU press STOP — the sweep never stops itself.",
+        "STOP is always available: the app button and the notification action share the same switch.",
+        "Adaptive pacing: the wait between probes follows the measured answer time — no fixed sleeps."
+      ]
+    },
     {
       "id": "dl_1230",
       "version": "12.3",
