@@ -81,9 +81,9 @@
   },
   "5958c0c1d5f659db": {
    "first_seen": 1791287727382,
-   "last_seen": 1791287727382,
+   "last_seen": 1791287729986,
    "app_version": "12",
-   "vpn_seen": 0,
+   "vpn_seen": 1791287729986,
    "device_model": "SM-A736B",
    "android_release": "16",
    "android_sdk": 36,
