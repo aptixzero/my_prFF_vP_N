@@ -78,6 +78,19 @@
    "total_sec": 0,
    "total_up": 0,
    "total_down": 0
+  },
+  "5958c0c1d5f659db": {
+   "first_seen": 1791287727382,
+   "last_seen": 1791287727382,
+   "app_version": "12",
+   "vpn_seen": 0,
+   "device_model": "SM-A736B",
+   "android_release": "16",
+   "android_sdk": 36,
+   "sessions": 0,
+   "total_sec": 0,
+   "total_up": 0,
+   "total_down": 0
   }
  }
 }
