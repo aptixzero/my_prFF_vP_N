@@ -1,6 +1,6 @@
 {
-  "version": 70,
-  "updated_at": "2026-10-07T13:48:44Z",
+  "version": 71,
+  "updated_at": "2026-10-07T14:49:34Z",
   "app": {
     "name": "Professor VPN",
     "latest_version": "12.6",
@@ -16,7 +16,7 @@
     {
       "id": "dl_1791380929",
       "version": "12.6",
-      "url": "https://github.com/aptixzero/my_prFF_vP_N/releases/download/v12.6/ProfessorVPN-v12.6-universal.apk",
+      "url": "https://raw.githubusercontent.com/aptixzero/my_prFF_vP_N/main/build/ProfessorVPN-v12.6-universal.apk",
       "mirror_url": "https://github.com/aptixzero/my_prFF_vP_N/releases/download/v12.6/ProfessorVPN-v12.6-universal.apk",
       "size": "57 MB",
       "sha256": "c93e625f08aad4c5c904a79a802302602fc8c787888d7da877368bb7b4a268d0",
