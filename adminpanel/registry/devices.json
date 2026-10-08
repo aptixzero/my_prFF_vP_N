@@ -117,6 +117,19 @@
    "total_sec": 0,
    "total_up": 0,
    "total_down": 0
+  },
+  "4f3d43f744c3bebf": {
+   "first_seen": 1791488858219,
+   "last_seen": 1791488858219,
+   "app_version": "12.8",
+   "vpn_seen": 0,
+   "device_model": "Redmi 8",
+   "android_release": "10",
+   "android_sdk": 29,
+   "sessions": 0,
+   "total_sec": 0,
+   "total_up": 0,
+   "total_down": 0
   }
  }
 }
