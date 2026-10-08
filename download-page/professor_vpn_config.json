@@ -1,10 +1,10 @@
 {
-  "version": 71,
-  "updated_at": "2026-10-07T14:49:34Z",
+  "version": 72,
+  "updated_at": "2026-10-08T06:39:42Z",
   "app": {
     "name": "Professor VPN",
-    "latest_version": "12.6",
-    "latest_version_code": 106,
+    "latest_version": "12.7",
+    "latest_version_code": 107,
     "contact": {
       "title": "پشتیبانی",
       "text": "جهت ثبت تبلیغات و استعلام قیمت بنر به آیدی زیر در تلگرام پیام دهید:",
@@ -13,6 +13,22 @@
     }
   },
   "downloads": [
+    {
+      "id": "dl_12_7",
+      "version": "12.7",
+      "url": "https://raw.githubusercontent.com/aptixzero/my_prFF_vP_N/main/build/ProfessorVPN-v12.7-universal.apk",
+      "mirror_url": "https://github.com/aptixzero/my_prFF_vP_N/releases/download/v12.7/ProfessorVPN-v12.7-universal.apk",
+      "size": "57 MB",
+      "sha256": "0b97aea96e53fc590acbb2b918a6f1e5fab178d06d64706bbc17d62fc9b50380",
+      "notes": "v12.7 — the sweep finds working configs again, and the list shows it live. Link-aware per-row walls, smart retry on artefact misses, gate dial first, pool admission restored, bank credit plus measured walk order. Working rows pin to the top as they pass, dead rows sink as they fail.",
+      "date": "2026-10-08T06:39:42Z",
+      "changelog": [
+        "Configs ping again: per-row cost follows the measured link, two attempts where a live config can hide, honest cause on the first dial.",
+        "Best source first: bank credit plus the measured race winner leads the walk — no randomness.",
+        "Live separation: working rows pin to the top as they pass, dead rows sink as they fail.",
+        "Stable: dead probe paths removed, STOP immediate, launch fast, same key — installs over any version."
+      ]
+    },
     {
       "id": "dl_1791380929",
       "version": "12.6",
