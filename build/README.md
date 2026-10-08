@@ -3,12 +3,12 @@
 The signed **universal** release APK for Professor VPN lives here — exactly one
 APK, always the binary for the current `versionName`.
 
-- Output name: `ProfessorVPN-v12.7-universal.apk` (`versionCode 107`)
+- Output name: `ProfessorVPN-v12.8-universal.apk` (`versionCode 108`)
 - ABIs: `arm64-v8a`, `armeabi-v7a`, `x86_64`, `x86` (Android 7.0+ / `minSdk 24`)
-- APK SHA-256: `0b97aea96e53fc590acbb2b918a6f1e5fab178d06d64706bbc17d62fc9b50380`
-- Size: 60525310 bytes
-- Same release key as v6.7–v12.6
-  (certificate SHA-256 `6a5ed5e32014ee77b41ca9ef9c71c5ab3397156d25fe22c7f1d52bb8907eb82d`)
-- `zipalign -c 4` verified; APK Signature Scheme v2 verified.
-
-See [`RELEASE_NOTES_v12.7.md`](../RELEASE_NOTES_v12.7.md).
+- Certificate SHA-256: `6a5ed5e32014ee77b41ca9ef9c71c5ab3397156d25fe22c7f1d52bb8907eb82d`
+  (same release key as v6.7–v12.7 — installs directly over any previous version)
+- Source: `aptixzero/professor-vpn-source-private` @ tag `v12.8`. Built and
+  tested for real on GitHub Actions (JVM unit tests + `assembleRelease` +
+  signing-certificate check: see that repo's `.github/workflows/release.yml`
+  and the Actions run linked from its `v12.8` tag), then independently
+  re-downloaded and re-verified before being copied here.
