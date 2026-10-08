@@ -1,0 +1,52 @@
+name: Attach release asset
+
+# Why this exists (v12.8):
+#
+# Creating a Release via the API works fine from anywhere, but uploading a
+# binary asset to it is a *different* host (uploads.github.com) from the
+# rest of the API (api.github.com) and the AI sandbox used to maintain this
+# repo has no network path to it — the release got created (tag, title,
+# notes) but came up with no APK attached. GitHub's own runners have normal
+# internet access, so this does the attach step there instead.
+#
+# Runs automatically for future releases (the `release: published` trigger
+# fires the moment a Release is created, by anyone, by any method) and can
+# be re-run by hand (workflow_dispatch) for a release that already exists,
+# which is exactly what v12.8 needed this first time.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to attach the build/ APK (and checksum) to'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  attach:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Attach the committed APK + checksum to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          tag="${{ github.event.release.tag_name }}${{ inputs.tag }}"
+          if [ -z "$tag" ]; then
+            echo "::error::No tag resolved (neither release event nor workflow_dispatch input gave one)."
+            exit 1
+          fi
+          apk=$(find build -maxdepth 1 -name "*.apk" | head -1)
+          if [ -z "$apk" ]; then
+            echo "::error::No APK found under build/ to attach."
+            exit 1
+          fi
+          echo "Attaching $apk (+ build/SHA256SUMS.txt) to release $tag"
+          gh release upload "$tag" "$apk" build/SHA256SUMS.txt \
+            --repo "${{ github.repository }}" --clobber
