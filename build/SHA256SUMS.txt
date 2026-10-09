@@ -1,1 +1,1 @@
-326e3fd33e2270aacbe47618da74b235bc1726f785bf45d01e3b28cc6432aaee  build/ProfessorVPN-v12.8-universal.apk
+b0f80a8df17332d58ca0b3a15e4c7043886f37c0a3401d862f25890b509a51cc  ProfessorVPN-v12.9-universal.apk

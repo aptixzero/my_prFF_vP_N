@@ -1,20 +1,22 @@
-name: Attach release asset
+name: Publish release asset
 
-# Why this exists (v12.8):
+# Creates (or completes) the GitHub Release for the APK committed under build/.
 #
-# Creating a Release via the API works fine from anywhere, but uploading a
-# binary asset to it is a *different* host (uploads.github.com) from the
-# rest of the API (api.github.com) and the AI sandbox used to maintain this
-# repo has no network path to it — the release got created (tag, title,
-# notes) but came up with no APK attached. GitHub's own runners have normal
-# internet access, so this does the attach step there instead.
+#  - push to main touching build/*.apk : the release for that APK's version is
+#    created if it does not exist (tag created on GitHub's side from the pushed
+#    commit), with RELEASE_NOTES_v<version>.md as its notes and the APK plus
+#    SHA256SUMS.txt attached. If it already exists, the assets are replaced.
+#  - release published / manual run     : attach the committed APK to that tag.
 #
-# Runs automatically for future releases (the `release: published` trigger
-# fires the moment a Release is created, by anyone, by any method) and can
-# be re-run by hand (workflow_dispatch) for a release that already exists,
-# which is exactly what v12.8 needed this first time.
+# This runs on GitHub's runners, which can reach uploads.github.com; the
+# maintenance sandbox cannot, and cannot create tags either.
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'build/*.apk'
   release:
     types: [published]
   workflow_dispatch:
@@ -27,26 +29,37 @@ permissions:
   contents: write
 
 jobs:
-  attach:
+  publish:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Attach the committed APK + checksum to the release
+      - name: Create the release if missing, then attach the APK + checksum
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
-          tag="${{ github.event.release.tag_name }}${{ inputs.tag }}"
-          if [ -z "$tag" ]; then
-            echo "::error::No tag resolved (neither release event nor workflow_dispatch input gave one)."
-            exit 1
-          fi
           apk=$(find build -maxdepth 1 -name "*.apk" | head -1)
           if [ -z "$apk" ]; then
-            echo "::error::No APK found under build/ to attach."
+            echo "::error::No APK found under build/."
             exit 1
           fi
-          echo "Attaching $apk (+ build/SHA256SUMS.txt) to release $tag"
-          gh release upload "$tag" "$apk" build/SHA256SUMS.txt \
-            --repo "${{ github.repository }}" --clobber
+          tag="${{ github.event.release.tag_name }}${{ inputs.tag }}"
+          if [ -z "$tag" ]; then
+            ver=$(basename "$apk" | sed -E 's/^ProfessorVPN-v([0-9.]+)-universal\.apk$/\1/')
+            tag="v${ver}"
+          fi
+          echo "Release tag: $tag   APK: $apk"
+          if gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload "$tag" "$apk" build/SHA256SUMS.txt \
+              --repo "${{ github.repository }}" --clobber
+          else
+            notes="RELEASE_NOTES_${tag}.md"
+            [ -f "$notes" ] || { echo "Release $tag" > /tmp/notes.md; notes=/tmp/notes.md; }
+            gh release create "$tag" \
+              --repo "${{ github.repository }}" \
+              --target "${{ github.sha }}" \
+              --title "$tag" \
+              --notes-file "$notes" \
+              "$apk" build/SHA256SUMS.txt
+          fi
